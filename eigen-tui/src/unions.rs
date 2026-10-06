@@ -145,6 +145,10 @@ fn start(e: &mut Engine, keys: UnionKeys, announce: bool, app: &mut App) {
     }
 }
 
+pub fn rejoin(e: &mut Engine, keys: UnionKeys, app: &mut App) {
+    start(e, keys, true, app);
+}
+
 pub fn create(e: &mut Engine, passphrase: Option<String>, app: &mut App) {
     match passphrase {
         Some(p) => join(e, &p, app),
@@ -190,6 +194,9 @@ pub fn say(e: &mut Engine, vid: u64, text: String, app: &mut App) {
 
 fn dissolve(e: &mut Engine, vid: u64, app: &mut App, why: &str) {
     if let Some(u) = e.unions.remove(&vid) {
+        if e.kept.remove(&u.keys.uid) {
+            e.dirty = true;
+        }
         let name = u.keys.face().name();
         e.active_ctx_drop(u.ctx);
         app.remove_view(vid);
@@ -202,6 +209,9 @@ pub fn leave(e: &mut Engine, vid: u64, _app: &mut App) {
         // Tell the others so they rotate keys away from me; then forget everything.
         send(e, vid, Body::Leave);
         if let Some(u) = e.unions.remove(&vid) {
+            if e.kept.remove(&u.keys.uid) {
+                e.dirty = true;
+            }
             e.active_ctx_drop(u.ctx);
         }
     }

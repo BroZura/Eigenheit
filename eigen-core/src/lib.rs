@@ -1,5 +1,5 @@
 //! EIGENHEIT core: identity, cryptographic protocol, wire formats.
-//! No I/O lives here. Everything is deterministic given the RNG.
+//! The only I/O here is the opt-in vault file (`vault.rs`).
 #![forbid(unsafe_code)]
 
 pub mod cell;
@@ -10,6 +10,7 @@ pub mod pgp;
 pub mod pow;
 pub mod ratchet;
 pub mod union;
+pub mod vault;
 pub mod wire;
 pub mod words;
 pub mod x3dh;
@@ -49,4 +50,33 @@ pub fn now() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod zeroize_checks {
+    //! Secrets must wipe themselves. Safe Rust cannot read freed memory, so these
+    //! are compile-time guarantees plus explicit-wipe checks on our own types.
+    use zeroize::{Zeroize, ZeroizeOnDrop};
+
+    fn on_drop<T: ZeroizeOnDrop>() {}
+    fn wipeable<T: Zeroize>() {}
+
+    #[test]
+    fn secret_types_zeroize() {
+        on_drop::<ed25519_dalek::SigningKey>();
+        // StaticSecret wipes via `#[zeroize(drop)]` (a Drop impl without the marker trait).
+        assert!(std::mem::needs_drop::<x25519_dalek::StaticSecret>());
+        on_drop::<crate::ratchet::MessageKey>();
+        on_drop::<zeroize::Zeroizing<[u8; 32]>>();
+        wipeable::<x25519_dalek::StaticSecret>();
+    }
+
+    #[test]
+    fn explicit_wipe() {
+        let mut k = crate::ratchet::MessageKey::from_bytes([0xAA; 32]);
+        k.zeroize();
+        let mut buf = zeroize::Zeroizing::new(vec![1u8; 64]);
+        buf.zeroize();
+        assert!(buf.iter().all(|b| *b == 0));
+    }
 }

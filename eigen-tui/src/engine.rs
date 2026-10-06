@@ -127,6 +127,9 @@ pub struct Engine {
     polls: HashMap<Mbox, Poll>,
     inflight: HashMap<(usize, Mbox), u64>,
     pub poll_secs: u64,
+    pub vault: Option<eigen_core::vault::Vault>,
+    pub kept: std::collections::HashSet<[u8; 32]>,
+    pub dirty: bool,
 }
 
 fn line(from: Who, text: String, kind: LineKind, ttl: u64) -> Line {
@@ -147,6 +150,9 @@ impl Engine {
             polls: HashMap::new(),
             inflight: HashMap::new(),
             poll_secs: POLL_SECS,
+            vault: None,
+            kept: std::collections::HashSet::new(),
+            dirty: false,
         }
     }
 
@@ -155,6 +161,7 @@ impl Engine {
         self.masks.push(MaskState { mask, ctx: random_u64(), next_bundle: 0, next_opks: 0 });
         app.masks.push(MaskInfo { who });
         self.pin(who, app);
+        self.dirty = true;
         self.masks.len() - 1
     }
 
@@ -169,6 +176,7 @@ impl Engine {
             Some(_) => {}
             None => {
                 self.pins.insert(name, who);
+                self.dirty = true;
             }
         }
     }
@@ -514,6 +522,20 @@ impl Engine {
             Action::Join(arg) => crate::unions::join(self, &arg, app),
             Action::Renew(vid) => crate::unions::renew(self, vid, app),
             Action::Drop(vid, name) => crate::unions::drop_vote(self, vid, &name, app),
+            Action::Keep(vid) => {
+                let Some(u) = self.unions.get(&vid) else { return };
+                if self.vault.is_none() {
+                    return app.notice(vid, "ram-only: nothing is kept. start with --vault <path> to choose otherwise.");
+                }
+                let uid = u.keys.uid;
+                if self.kept.remove(&uid) {
+                    app.notice(vid, "no longer kept. after I close, this union is forgotten.");
+                } else {
+                    self.kept.insert(uid);
+                    app.notice(vid, "kept in my vault (its secret, nothing it said). I rejoin it on my next start.");
+                }
+                self.dirty = true;
+            }
             Action::Burn | Action::Quit => {}
         }
     }
@@ -611,8 +633,54 @@ impl Engine {
         }
     }
 
+    /// Write masks, kept unions and pins to the vault (if I chose to have one).
+    pub fn persist(&mut self, app: &App) {
+        self.dirty = false;
+        let Some(v) = &self.vault else { return };
+        let data = eigen_core::vault::VaultData {
+            masks: self.masks.iter().map(|m| m.mask.to_bytes()).collect(),
+            unions: self
+                .unions
+                .values()
+                .filter(|u| self.kept.contains(&u.keys.uid))
+                .map(|u| (zeroize::Zeroizing::new(*u.keys.secret_bytes()), u.keys.pow, u.mask as u16))
+                .collect(),
+            pins: self.pins.values().map(|w| w.0).collect(),
+            active_mask: app.active_mask as u16,
+            wipe_other: false,
+        };
+        let _ = v.save(&data);
+    }
+
+    /// Load what the vault holds: masks, pins, and rejoin kept unions.
+    pub fn load(&mut self, data: eigen_core::vault::VaultData, app: &mut App) {
+        for m in &data.masks {
+            if let Ok(mask) = Mask::from_bytes(m) {
+                self.add_mask(mask, app);
+            }
+        }
+        for p in data.pins {
+            let w = Who(p);
+            self.pins.entry(w.name()).or_insert(w);
+        }
+        for (secret, pow, mi) in data.unions {
+            if (mi as usize) < self.masks.len() {
+                app.active_mask = mi as usize;
+                let keys = eigen_core::union::UnionKeys::from_saved(*secret, pow);
+                self.kept.insert(keys.uid);
+                crate::unions::rejoin(self, keys, app);
+            }
+        }
+        app.active_mask = (data.active_mask as usize).min(self.masks.len().saturating_sub(1));
+        self.dirty = false;
+    }
+
     /// Drop every secret this process holds. Memory is zeroized on drop.
     pub fn burn(&mut self) {
+        if let Some(v) = self.vault.take() {
+            eigen_core::vault::Vault::burn(&v.path);
+        }
+        self.kept.clear();
         self.dms.clear();
         self.unions.clear();
         self.masks.clear();
@@ -750,5 +818,30 @@ mod tests {
         a.cmd("/leave");
         assert!(a.e.dms.is_empty());
         assert!(a.app.views.iter().all(|v| v.kind != ViewKind::Dm));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn vault_keeps_masks_and_unions_then_burns() {
+        use eigen_core::vault::{Vault, VaultData};
+        let r = relay().await;
+        let path = std::env::temp_dir().join(format!("eigen-engine-vault-{}", random_u64())).to_string_lossy().into_owned();
+        let mut a = Peer::new(r.clone());
+        a.e.vault = Some(Vault::create(&path, "pw", &VaultData::default(), None).unwrap());
+        a.cmd("/mask");
+        a.cmd("/union");
+        a.cmd("/keep");
+        a.cmd("/union");
+        a.e.persist(&a.app);
+        let (_, d) = Vault::open(&path, "pw").unwrap();
+        assert_eq!(d.masks.len(), 2);
+        assert_eq!(d.unions.len(), 1, "only the kept union");
+        let kept_uid = *a.e.kept.iter().next().unwrap();
+        let mut b = Peer::new(r);
+        b.e.load(d, &mut b.app);
+        assert_eq!(b.e.masks.len(), 3);
+        assert!(b.e.unions.values().any(|u| u.keys.uid == kept_uid));
+        a.e.burn();
+        assert!(std::fs::metadata(&path).is_err(), "vault file destroyed");
+        assert!(a.e.masks.is_empty() && a.e.unions.is_empty() && a.e.dms.is_empty());
     }
 }

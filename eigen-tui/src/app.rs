@@ -79,6 +79,7 @@ pub enum Action {
     Export(Option<String>),
     Import(String),
     Verify(u64, Option<String>),
+    Keep(u64),
     Burn,
     Quit,
 }
@@ -136,6 +137,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("/drop <name>", "vote to rotate keys away from someone"),
     ("/mute <name>", "my screen, my rules: hide someone locally"),
     ("/cover on|off", "constant-rate cover traffic"),
+    ("/keep", "remember this union in my vault (toggle)"),
     ("/export [path]", "my PGP public key (screen, or file)"),
     ("/import <path|card>", "pin someone's PGP key or card"),
     ("/burn", "destroy everything and exit (Ctrl-X x3)"),
@@ -378,6 +380,11 @@ impl App {
                 _ => self.outbox.push(Action::Cover(!self.cover)),
             },
             "export" => self.outbox.push(Action::Export(arg_opt)),
+            "keep" => {
+                if need(self, ViewKind::Union) {
+                    self.outbox.push(Action::Keep(vid))
+                }
+            }
             "import" if !arg.is_empty() => self.outbox.push(Action::Import(arg.to_string())),
             "burn" => self.outbox.push(Action::Burn),
             "help" => self.mode = Mode::Help,

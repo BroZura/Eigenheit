@@ -24,3 +24,7 @@ Each entry: decision, why, and what it costs. When a security choice was ambiguo
 19. **PoW**: BLAKE2b hashcash bound to `(hour, mailbox, H(blob))`. Relay base 12 bits, +2 bits per doubling of the per-mailbox put rate. Union default 14 bits for messages, +6 for JOIN.
 20. **Relay panics are silent** (empty panic hook, `panic = "abort"` in release) so not even a crash message leaks identifiers.
 21. **Ctrl-M is Enter** in most terminals; new mask is `/mask` and `Ctrl-M` only works where the kitty keyboard protocol is available.
+23. **Union persistence is per union and explicit** (`/keep`, only with `--vault`). The vault keeps the union *secret* and my mask; never messages, never the roster. On restart I rejoin with a fresh JOIN.
+24. **Vault writes are in place** (no temp file + rename), followed by `fsync`. `/burn` overwrites the file twice with random bytes before unlinking. On SSDs, copy-on-write filesystems and snapshots this cannot guarantee the old blocks are gone — use full-disk encryption underneath.
+25. **No clipboard.** EIGENHEIT never reads or writes the clipboard (no OSC 52); cards and invites are shown on screen. Nothing to clear on exit.
+26. **Cover mode is a hard cadence**: every link sends exactly one cell per beat (500 ms ± 30 %), real or padding, so a burst of activity costs latency, not visibility. Without cover, PUTs wait a random 0–1500 ms.

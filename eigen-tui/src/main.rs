@@ -124,14 +124,34 @@ async fn run(opts: Opts, hard: harden::Hardening) -> std::io::Result<bool> {
         delay_ms: opts.delay_ms,
     });
     let mut engine = Engine::new(net, ntx);
-    let first = engine.add_mask(Mask::generate(), &mut app);
-    app.active_mask = first;
-    let me = app.masks[first].who.name();
+    if let Some(path) = &opts.vault {
+        match open_or_create(path) {
+            Ok((v, data)) => {
+                engine.vault = Some(v);
+                app.vault = true;
+                engine.load(data, &mut app);
+            }
+            Err(msg) => {
+                println!("{msg}");
+                return Ok(false);
+            }
+        }
+    }
+    if engine.masks.is_empty() {
+        let first = engine.add_mask(Mask::generate(), &mut app);
+        app.active_mask = first;
+    }
+    engine.persist(&app);
+    let me = app.masks[app.active_mask].who.name();
     app.notice(0, format!("I am {me}. generated here, known nowhere."));
     if opts.relays.is_empty() {
         app.notice(0, "no relays given: I can speak to nobody. start with --relay <onion>:<port>.");
     }
-    app.notice(0, "nothing is written to disk. /help for what is mine to do.");
+    if app.vault {
+        app.notice(0, "my vault is open: masks, pins and /keep'd unions persist. never messages. /burn destroys it.");
+    } else {
+        app.notice(0, "nothing is written to disk. /help for what is mine to do.");
+    }
 
     enable_raw_mode()?;
     let mut out = stdout();
@@ -206,7 +226,67 @@ async fn run(opts: Opts, hard: harden::Hardening) -> std::io::Result<bool> {
                 other => engine.act(other, &mut app),
             }
         }
+        if engine.dirty {
+            engine.persist(&app);
+        }
     }
+}
+
+/// Read a line from the terminal without echo.
+fn read_secret(prompt: &str) -> std::io::Result<zeroize::Zeroizing<String>> {
+    let mut out = stdout();
+    out.write_all(prompt.as_bytes())?;
+    out.flush()?;
+    enable_raw_mode()?;
+    let mut s = zeroize::Zeroizing::new(String::new());
+    let res = loop {
+        match event::read() {
+            Ok(Event::Key(k)) if k.kind != KeyEventKind::Release => match k.code {
+                KeyCode::Enter => break Ok(()),
+                KeyCode::Backspace => {
+                    s.pop();
+                }
+                KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => break Err(std::io::ErrorKind::Interrupted.into()),
+                KeyCode::Char(c) => s.push(c),
+                _ => {}
+            },
+            Ok(_) => {}
+            Err(e) => break Err(e),
+        }
+    };
+    disable_raw_mode()?;
+    out.write_all(b"\r\n")?;
+    res.map(|_| s)
+}
+
+fn open_or_create(path: &str) -> Result<(eigen_core::vault::Vault, eigen_core::vault::VaultData), String> {
+    use eigen_core::vault::{Vault, VaultData};
+    let io = |_| "aborted.".to_string();
+    if std::path::Path::new(path).exists() {
+        let pass = read_secret("passphrase: ").map_err(io)?;
+        return Vault::open(path, &pass).map_err(|_| "does not open.".to_string());
+    }
+    println!("no vault at {path}. making one: a single file, indistinguishable from random bytes.");
+    let p1 = read_secret("new passphrase: ").map_err(io)?;
+    let p2 = read_secret("again: ").map_err(io)?;
+    if *p1 != *p2 || p1.is_empty() {
+        return Err("passphrases differ (or are empty). nothing written.".into());
+    }
+    println!("a duress passphrase opens a decoy instead (one fresh mask). it can also silently wipe the real vault.");
+    let d = read_secret("duress passphrase (empty for none): ").map_err(io)?;
+    let real = VaultData { masks: vec![Mask::generate().to_bytes()], ..Default::default() };
+    let v = if d.is_empty() {
+        Vault::create(path, &p1, &real, None)
+    } else {
+        if *d == *p1 {
+            return Err("the duress passphrase must differ. nothing written.".into());
+        }
+        let mode = read_secret("on duress: [d]ecoy only, or [w]ipe the real vault? ").map_err(io)?;
+        let decoy = VaultData { masks: vec![Mask::generate().to_bytes()], wipe_other: mode.trim() == "w", ..Default::default() };
+        Vault::create(path, &p1, &real, Some((&d, &decoy)))
+    }
+    .map_err(|_| "could not write the vault.".to_string())?;
+    Ok((v, real))
 }
 
 fn key(app: &mut App, k: KeyEvent) {

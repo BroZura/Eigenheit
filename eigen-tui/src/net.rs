@@ -262,4 +262,31 @@ mod tests {
             assert_eq!(link.fetch_all(m, 0, 10).await.unwrap().len(), 2);
         }
     }
+
+    #[tokio::test]
+    async fn cover_traffic_is_constant_while_idle() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let c2 = counter.clone();
+        tokio::spawn(async move {
+            let (mut s, _) = l.accept().await.unwrap();
+            let mut cell = [0u8; CELL];
+            while s.read_exact(&mut cell).await.is_ok() {
+                c2.fetch_add(1, Ordering::Relaxed);
+                let r = Request::decode(&cell).unwrap();
+                assert_eq!(r.op, Op::Pad, "idle link sends only padding");
+                s.write_all(&Response { rid: r.rid, status: Status::Pad }.encode()).await.unwrap();
+            }
+        });
+        let mut c = cfg(RelayAddr { host: "127.0.0.1".into(), port }, true);
+        c.cover_ms = 50;
+        let _link = Link::spawn(c);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let start = counter.load(Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+        let n = counter.load(Ordering::Relaxed) - start;
+        assert!((12..=30).contains(&n), "{n} cells in 1s at 50ms ±30%");
+    }
 }
