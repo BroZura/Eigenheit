@@ -26,9 +26,19 @@ const OPK_EVERY: u64 = 20 * 3600;
 pub type Fetched = (Bundle, Option<(u32, [u8; 32])>);
 
 pub enum NetEvent {
-    Fetched { relay: usize, mbox: Mbox, items: Vec<Item> },
-    Bundle { view: u64, got: Option<Fetched> },
-    Sent { view: u64, ok: bool },
+    Fetched {
+        relay: usize,
+        mbox: Mbox,
+        items: Vec<Item>,
+    },
+    Bundle {
+        view: u64,
+        got: Option<Fetched>,
+    },
+    Sent {
+        view: u64,
+        ok: bool,
+    },
 }
 
 #[derive(Clone)]
@@ -49,7 +59,10 @@ pub struct Net {
 
 impl Net {
     pub fn new(cfg: NetCfg) -> Net {
-        Net { cfg, links: HashMap::new() }
+        Net {
+            cfg,
+            links: HashMap::new(),
+        }
     }
     pub fn links(&mut self, ctx: u64) -> Vec<Link> {
         let cfg = self.cfg.clone();
@@ -62,7 +75,11 @@ impl Net {
                         Link::spawn(LinkCfg {
                             relay: r.clone(),
                             // Onion relays only through tor; clear-net only exists with consent.
-                            socks: if r.is_onion() { cfg.socks.clone() } else { None },
+                            socks: if r.is_onion() {
+                                cfg.socks.clone()
+                            } else {
+                                None
+                            },
                             isolation: eigen_core::wire::hex(&random::<12>()),
                             cover: cfg.cover.clone(),
                             cover_ms: cfg.cover_ms,
@@ -133,7 +150,13 @@ pub struct Engine {
 }
 
 fn line(from: Who, text: String, kind: LineKind, ttl: u64) -> Line {
-    Line { from: Some(from), text, kind, at: now(), expires: Some(now() + ttl) }
+    Line {
+        from: Some(from),
+        text,
+        kind,
+        at: now(),
+        expires: Some(now() + ttl),
+    }
 }
 
 impl Engine {
@@ -158,7 +181,12 @@ impl Engine {
 
     pub fn add_mask(&mut self, mask: Mask, app: &mut App) -> usize {
         let who = mask.who();
-        self.masks.push(MaskState { mask, ctx: random_u64(), next_bundle: 0, next_opks: 0 });
+        self.masks.push(MaskState {
+            mask,
+            ctx: random_u64(),
+            next_bundle: 0,
+            next_opks: 0,
+        });
         app.masks.push(MaskInfo { who });
         self.pin(who, app);
         self.dirty = true;
@@ -194,7 +222,12 @@ impl Engine {
     }
 
     fn watch(&mut self, mbox: Mbox, ctx: u64, route: Route) {
-        self.polls.entry(mbox).or_insert(Poll { ctx, route, next: 0, rescan: now() + RESCAN_SECS });
+        self.polls.entry(mbox).or_insert(Poll {
+            ctx,
+            route,
+            next: 0,
+            rescan: now() + RESCAN_SECS,
+        });
     }
 
     fn unwatch_ctx(&mut self, ctx: u64) {
@@ -253,7 +286,12 @@ impl Engine {
         }
         crate::unions::tick(self, app);
         // Retry bundle fetches.
-        let retry: Vec<u64> = self.dms.iter().filter(|(_, d)| d.retry_at.is_some_and(|r| r <= t)).map(|(v, _)| *v).collect();
+        let retry: Vec<u64> = self
+            .dms
+            .iter()
+            .filter(|(_, d)| d.retry_at.is_some_and(|r| r <= t))
+            .map(|(v, _)| *v)
+            .collect();
         for v in retry {
             self.fetch_bundle(v);
         }
@@ -267,7 +305,11 @@ impl Engine {
             .iter_mut()
             .filter(|(_, p)| p.next <= t)
             .map(|(m, p)| {
-                p.next = if self.poll_secs == 0 { t } else { t + self.poll_secs + random_u64() % 2 };
+                p.next = if self.poll_secs == 0 {
+                    t
+                } else {
+                    t + self.poll_secs + random_u64() % 2
+                };
                 if p.rescan <= t {
                     p.rescan = t + RESCAN_SECS;
                     (*m, 1)
@@ -283,11 +325,19 @@ impl Engine {
                     continue;
                 }
                 self.inflight.insert((ri, mbox), t);
-                let after = if rescan == 1 { 0 } else { *self.cursors.get(&(ri, mbox)).unwrap_or(&0) };
+                let after = if rescan == 1 {
+                    0
+                } else {
+                    *self.cursors.get(&(ri, mbox)).unwrap_or(&0)
+                };
                 let tx = self.tx.clone();
                 tokio::spawn(async move {
                     let items = link.fetch_all(mbox, after, 64).await.unwrap_or_default();
-                    let _ = tx.send(NetEvent::Fetched { relay: ri, mbox, items });
+                    let _ = tx.send(NetEvent::Fetched {
+                        relay: ri,
+                        mbox,
+                        items,
+                    });
                 });
             }
         }
@@ -301,7 +351,9 @@ impl Engine {
                     let c = self.cursors.entry((relay, mbox)).or_insert(0);
                     *c = (*c).max(last.seq);
                 }
-                let Some(route) = self.polls.get(&mbox).map(|p| p.route) else { return };
+                let Some(route) = self.polls.get(&mbox).map(|p| p.route) else {
+                    return;
+                };
                 for it in items {
                     let tag = h(&[&it.blob]);
                     if self.seen.contains_key(&tag) {
@@ -325,14 +377,32 @@ impl Engine {
     }
 
     fn on_intro(&mut self, mi: usize, blob: &[u8], app: &mut App) {
-        let known: Vec<[u8; 32]> = self.dms.values().filter(|d| d.mask == mi).filter_map(|d| d.session.as_ref().map(|s| s.ek)).collect();
+        let known: Vec<[u8; 32]> = self
+            .dms
+            .values()
+            .filter(|d| d.mask == mi)
+            .filter_map(|d| d.session.as_ref().map(|s| s.ek))
+            .collect();
         let used_before = self.masks[mi].mask.opks.len();
-        let Ok(r) = dm::open_intro(&mut self.masks[mi].mask, blob, |ek| known.contains(ek)) else { return };
+        let Ok(r) = dm::open_intro(&mut self.masks[mi].mask, blob, |ek| known.contains(ek)) else {
+            return;
+        };
         match r {
             Intro::Existing(ek, rmsg) => {
-                let Some((vid, d)) = self.dms.iter_mut().find(|(_, d)| d.session.as_ref().is_some_and(|s| s.ek == ek)) else { return };
+                let Some((vid, d)) = self
+                    .dms
+                    .iter_mut()
+                    .find(|(_, d)| d.session.as_ref().is_some_and(|s| s.ek == ek))
+                else {
+                    return;
+                };
                 let vid = *vid;
-                if let Ok(inc) = d.session.as_mut().map(|s| s.open_existing_intro(&rmsg)).unwrap_or(Err(eigen_core::Error::Unknown)) {
+                if let Ok(inc) = d
+                    .session
+                    .as_mut()
+                    .map(|s| s.open_existing_intro(&rmsg))
+                    .unwrap_or(Err(eigen_core::Error::Unknown))
+                {
                     let peer = d.peer;
                     self.show(vid, peer, inc, app);
                 }
@@ -343,14 +413,21 @@ impl Engine {
                     let card = ms.mask.card();
                     let ctx = ms.ctx;
                     let fresh = ms.mask.refill_opks();
-                    let blobs: Vec<_> = fresh.iter().filter_map(|(id, pk)| dm::opk_blob(&ms.mask, *id, pk).ok()).collect();
+                    let blobs: Vec<_> = fresh
+                        .iter()
+                        .filter_map(|(id, pk)| dm::opk_blob(&ms.mask, *id, pk).ok())
+                        .collect();
                     for b in blobs {
                         self.put(ctx, 0, card.opk_mbox(), 24 * 3600, b, DM_POW);
                     }
                 }
                 let peer = session.peer;
                 self.pin(peer, app);
-                let existing = self.dms.iter().find(|(_, d)| d.mask == mi && d.peer == peer).map(|(v, _)| *v);
+                let existing = self
+                    .dms
+                    .iter()
+                    .find(|(_, d)| d.mask == mi && d.peer == peer)
+                    .map(|(v, _)| *v);
                 let vid = match existing {
                     Some(v) => {
                         app.notice(v, "they began a new session. the old keys are gone.");
@@ -362,21 +439,41 @@ impl Engine {
                         view.who = Some(peer);
                         view.ttl = inc.ttl as u64;
                         app.add_view(view);
-                        app.notice(vid, format!("{} reached me. forward secret; their words live {}.", peer.name(), crate::app::fmt_duration(inc.ttl as u64)));
+                        app.notice(
+                            vid,
+                            format!(
+                                "{} reached me. forward secret; their words live {}.",
+                                peer.name(),
+                                crate::app::fmt_duration(inc.ttl as u64)
+                            ),
+                        );
                         vid
                     }
                 };
                 if let Some(old) = self.dms.get(&vid) {
                     self.net.drop_ctx(old.ctx);
                 }
-                self.dms.insert(vid, DmState { mask: mi, peer, card: None, session: Some(*session), pending: Vec::new(), ctx: random_u64(), retry_at: None });
+                self.dms.insert(
+                    vid,
+                    DmState {
+                        mask: mi,
+                        peer,
+                        card: None,
+                        session: Some(*session),
+                        pending: Vec::new(),
+                        ctx: random_u64(),
+                        retry_at: None,
+                    },
+                );
                 self.show(vid, peer, inc, app);
             }
         }
     }
 
     fn on_dm(&mut self, vid: u64, mbox: &Mbox, blob: &[u8], app: &mut App) {
-        let Some(d) = self.dms.get_mut(&vid) else { return };
+        let Some(d) = self.dms.get_mut(&vid) else {
+            return;
+        };
         let Some(s) = d.session.as_mut() else { return };
         let was_init = s.is_initiating();
         if let Ok(inc) = s.open(mbox, blob) {
@@ -397,7 +494,9 @@ impl Engine {
     }
 
     fn fetch_bundle(&mut self, vid: u64) {
-        let Some(d) = self.dms.get_mut(&vid) else { return };
+        let Some(d) = self.dms.get_mut(&vid) else {
+            return;
+        };
         let Some(card) = d.card else { return };
         d.retry_at = None;
         let links = self.net.links(d.ctx);
@@ -405,8 +504,14 @@ impl Engine {
         tokio::spawn(async move {
             let mut got = None;
             for l in links {
-                let Ok(items) = l.fetch_all(card.bundle_mbox(), 0, 256).await else { continue };
-                if let Some(b) = items.iter().rev().find_map(|it| dm::open_bundle(&card, &it.blob).ok()) {
+                let Ok(items) = l.fetch_all(card.bundle_mbox(), 0, 256).await else {
+                    continue;
+                };
+                if let Some(b) = items
+                    .iter()
+                    .rev()
+                    .find_map(|it| dm::open_bundle(&card, &it.blob).ok())
+                {
                     let mut opk = None;
                     for _ in 0..4 {
                         match l.take(card.opk_mbox()).await {
@@ -428,7 +533,9 @@ impl Engine {
     }
 
     fn on_bundle(&mut self, vid: u64, got: Option<Fetched>, app: &mut App) {
-        let Some(d) = self.dms.get_mut(&vid) else { return };
+        let Some(d) = self.dms.get_mut(&vid) else {
+            return;
+        };
         if d.session.is_some() {
             return;
         }
@@ -442,19 +549,31 @@ impl Engine {
         match Session::start(&self.masks[mi].mask, &card, &bundle, opk) {
             Ok(s) => {
                 d.session = Some(s);
-                app.notice(vid, if opk.is_some() { "keys agreed (with one-time prekey)." } else { "keys agreed (no one-time prekey left: weaker against replay)." });
+                app.notice(
+                    vid,
+                    if opk.is_some() {
+                        "keys agreed (with one-time prekey)."
+                    } else {
+                        "keys agreed (no one-time prekey left: weaker against replay)."
+                    },
+                );
                 let pending = std::mem::take(&mut d.pending);
                 self.send_dm(vid, K_HELLO, String::new(), app);
                 for p in pending {
                     self.send_dm(vid, K_TEXT, p, app);
                 }
             }
-            Err(_) => app.warn(vid, "their bundle does not verify against their card. not proceeding."),
+            Err(_) => app.warn(
+                vid,
+                "their bundle does not verify against their card. not proceeding.",
+            ),
         }
     }
 
     fn send_dm(&mut self, vid: u64, kind: u8, text: String, app: &mut App) {
-        let Some(d) = self.dms.get_mut(&vid) else { return };
+        let Some(d) = self.dms.get_mut(&vid) else {
+            return;
+        };
         let Some(s) = d.session.as_mut() else {
             d.pending.push(text);
             app.notice(vid, "queued until their keys arrive.");
@@ -478,18 +597,26 @@ impl Engine {
             Action::NewMask => {
                 let i = self.add_mask(Mask::generate(), app);
                 app.active_mask = i;
-                app.here_notice(format!("I wear a fresh mask: {}. nothing links it to the others.", app.masks[i].who.name()));
+                app.here_notice(format!(
+                    "I wear a fresh mask: {}. nothing links it to the others.",
+                    app.masks[i].who.name()
+                ));
             }
             Action::SwitchMask(i) => {
                 app.active_mask = i;
-                app.here_notice(format!("I am {} now. new unions and dms wear this mask.", app.masks[i].who.name()));
+                app.here_notice(format!(
+                    "I am {} now. new unions and dms wear this mask.",
+                    app.masks[i].who.name()
+                ));
             }
             Action::Dm(arg) => self.open_dm(&arg, app),
-            Action::Say(vid, text) => match app.views.iter().find(|v| v.id == vid).map(|v| v.kind) {
-                Some(ViewKind::Dm) => self.send_dm(vid, K_TEXT, text, app),
-                Some(ViewKind::Union) => crate::unions::say(self, vid, text, app),
-                _ => {}
-            },
+            Action::Say(vid, text) => {
+                match app.views.iter().find(|v| v.id == vid).map(|v| v.kind) {
+                    Some(ViewKind::Dm) => self.send_dm(vid, K_TEXT, text, app),
+                    Some(ViewKind::Union) => crate::unions::say(self, vid, text, app),
+                    _ => {}
+                }
+            }
             Action::Leave(vid) => {
                 if let Some(d) = self.dms.remove(&vid) {
                     self.net.drop_ctx(d.ctx);
@@ -503,18 +630,28 @@ impl Engine {
                 if let Some(s) = self.dms.get_mut(&vid).and_then(|d| d.session.as_mut()) {
                     s.ttl = secs as u32;
                 } else if crate::unions::set_ttl(self, vid, secs) {
-                    app.notice(vid, "the union ends no later than that for me, and each term lasts that long.");
+                    app.notice(
+                        vid,
+                        "the union ends no later than that for me, and each term lasts that long.",
+                    );
                 }
                 if let Some(v) = app.view_mut(vid) {
                     v.ttl = secs;
                 }
-                app.notice(vid, format!("my words here now live {}.", crate::app::fmt_duration(secs)));
+                app.notice(
+                    vid,
+                    format!("my words here now live {}.", crate::app::fmt_duration(secs)),
+                );
             }
             Action::Verify(vid, name) => self.verify(vid, name, app),
             Action::Cover(on) => {
                 self.net.cfg.cover.store(on, Ordering::Relaxed);
                 app.cover = on;
-                app.here_notice(if on { "cover traffic on: one cell per beat, whether I speak or not." } else { "cover traffic off: my silences are visible again." });
+                app.here_notice(if on {
+                    "cover traffic on: one cell per beat, whether I speak or not."
+                } else {
+                    "cover traffic off: my silences are visible again."
+                });
             }
             Action::Export(arg) => self.export(arg, app),
             Action::Import(arg) => self.import(&arg, app),
@@ -523,13 +660,21 @@ impl Engine {
             Action::Renew(vid) => crate::unions::renew(self, vid, app),
             Action::Drop(vid, name) => crate::unions::drop_vote(self, vid, &name, app),
             Action::Keep(vid) => {
-                let Some(u) = self.unions.get(&vid) else { return };
+                let Some(u) = self.unions.get(&vid) else {
+                    return;
+                };
                 if self.vault.is_none() {
-                    return app.notice(vid, "ram-only: nothing is kept. start with --vault <path> to choose otherwise.");
+                    return app.notice(
+                        vid,
+                        "ram-only: nothing is kept. start with --vault <path> to choose otherwise.",
+                    );
                 }
                 let uid = u.keys.uid;
                 if self.kept.remove(&uid) {
-                    app.notice(vid, "no longer kept. after I close, this union is forgotten.");
+                    app.notice(
+                        vid,
+                        "no longer kept. after I close, this union is forgotten.",
+                    );
                 } else {
                     self.kept.insert(uid);
                     app.notice(vid, "kept in my vault (its secret, nothing it said). I rejoin it on my next start.");
@@ -543,14 +688,22 @@ impl Engine {
     fn open_dm(&mut self, arg: &str, app: &mut App) {
         let card = match Card::parse(arg) {
             Ok(c) => c,
-            Err(_) => return app.here_notice(format!("a dm needs a card: {CARD_PREFIX}…  (/card shows mine)")),
+            Err(_) => {
+                return app.here_notice(format!(
+                    "a dm needs a card: {CARD_PREFIX}…  (/card shows mine)"
+                ))
+            }
         };
         let mi = app.active_mask;
         if self.masks.iter().any(|m| m.mask.who() == card.who) {
             return app.here_notice("that card is one of my own masks.");
         }
         self.pin(card.who, app);
-        if let Some((v, _)) = self.dms.iter().find(|(_, d)| d.mask == mi && d.peer == card.who) {
+        if let Some((v, _)) = self
+            .dms
+            .iter()
+            .find(|(_, d)| d.mask == mi && d.peer == card.who)
+        {
             let v = *v;
             return app.focus(v);
         }
@@ -560,8 +713,26 @@ impl Engine {
         view.ttl = dm::DEFAULT_TTL as u64;
         app.add_view(view);
         app.focus(vid);
-        app.notice(vid, format!("reaching {} as {}…", card.who.name(), app.masks[mi].who.name()));
-        self.dms.insert(vid, DmState { mask: mi, peer: card.who, card: Some(card), session: None, pending: Vec::new(), ctx: random_u64(), retry_at: None });
+        app.notice(
+            vid,
+            format!(
+                "reaching {} as {}…",
+                card.who.name(),
+                app.masks[mi].who.name()
+            ),
+        );
+        self.dms.insert(
+            vid,
+            DmState {
+                mask: mi,
+                peer: card.who,
+                card: Some(card),
+                session: None,
+                pending: Vec::new(),
+                ctx: random_u64(),
+                retry_at: None,
+            },
+        );
         self.fetch_bundle(vid);
     }
 
@@ -578,7 +749,9 @@ impl Engine {
                 .or_else(|| crate::unions::member_named(self, vid, n)),
             (None, None) => me,
         };
-        let (Some(t), Some(me)) = (target, me) else { return app.notice(vid, "verify whom? /verify <name>") };
+        let (Some(t), Some(me)) = (target, me) else {
+            return app.notice(vid, "verify whom? /verify <name>");
+        };
         app.notice(vid, format!("{} {}", t.glyph(), t.name()));
         for row in t.identicon() {
             let s: String = row.iter().map(|b| if *b { "██" } else { "  " }).collect();
@@ -593,7 +766,9 @@ impl Engine {
     }
 
     fn export(&mut self, arg: Option<String>, app: &mut App) {
-        let Some(ms) = self.masks.get(app.active_mask) else { return };
+        let Some(ms) = self.masks.get(app.active_mask) else {
+            return;
+        };
         let card = ms.mask.card().encode();
         match arg.as_deref() {
             Some("card") => {
@@ -603,7 +778,9 @@ impl Engine {
             Some(path) => {
                 let armor = pgp::export(&ms.mask);
                 match std::fs::write(path, armor) {
-                    Ok(_) => app.here_notice(format!("public key written to {path} — I chose to touch the disk.")),
+                    Ok(_) => app.here_notice(format!(
+                        "public key written to {path} — I chose to touch the disk."
+                    )),
                     Err(_) => app.here_notice("could not write there."),
                 }
             }
@@ -622,12 +799,19 @@ impl Engine {
         let who = if arg.starts_with(CARD_PREFIX) {
             Card::parse(arg).map(|c| c.who).ok()
         } else {
-            std::fs::read_to_string(arg).ok().and_then(|a| pgp::import(&a).ok())
+            std::fs::read_to_string(arg)
+                .ok()
+                .and_then(|a| pgp::import(&a).ok())
         };
         match who {
             Some(w) => {
                 self.pin(w, app);
-                app.here_notice(format!("pinned {} {} · pgp {}", w.glyph(), w.name(), pgp::fingerprint(&w)));
+                app.here_notice(format!(
+                    "pinned {} {} · pgp {}",
+                    w.glyph(),
+                    w.name(),
+                    pgp::fingerprint(&w)
+                ));
             }
             None => app.here_notice("not a card or an ed25519 pgp public key I can verify."),
         }
@@ -643,7 +827,13 @@ impl Engine {
                 .unions
                 .values()
                 .filter(|u| self.kept.contains(&u.keys.uid))
-                .map(|u| (zeroize::Zeroizing::new(*u.keys.secret_bytes()), u.keys.pow, u.mask as u16))
+                .map(|u| {
+                    (
+                        zeroize::Zeroizing::new(*u.keys.secret_bytes()),
+                        u.keys.pow,
+                        u.mask as u16,
+                    )
+                })
                 .collect(),
             pins: self.pins.values().map(|w| w.0).collect(),
             active_mask: app.active_mask as u16,
@@ -701,7 +891,8 @@ impl Engine {
     }
 
     pub fn unwatch_union_except(&mut self, vid: u64, keep: &[Mbox]) {
-        self.polls.retain(|m, p| p.route != Route::Union(vid) || keep.contains(m));
+        self.polls
+            .retain(|m, p| p.route != Route::Union(vid) || keep.contains(m));
     }
 }
 
@@ -720,7 +911,13 @@ pub mod harness {
     impl Peer {
         pub fn new(relay: RelayAddr) -> Peer {
             let (tx, rx) = unbounded_channel();
-            let net = Net::new(NetCfg { relays: vec![relay], socks: None, cover: Arc::new(AtomicBool::new(false)), cover_ms: 20, delay_ms: 0 });
+            let net = Net::new(NetCfg {
+                relays: vec![relay],
+                socks: None,
+                cover: Arc::new(AtomicBool::new(false)),
+                cover_ms: 20,
+                delay_ms: 0,
+            });
             let mut e = Engine::new(net, tx);
             e.poll_secs = 0;
             let mut app = App::new(false);
@@ -751,7 +948,12 @@ pub mod harness {
             }
         }
         pub fn texts(&self, kind: ViewKind) -> Vec<String> {
-            self.app.views.iter().filter(|v| v.kind == kind).flat_map(|v| v.lines.iter().map(|l| l.text.clone())).collect()
+            self.app
+                .views
+                .iter()
+                .filter(|v| v.kind == kind)
+                .flat_map(|v| v.lines.iter().map(|l| l.text.clone()))
+                .collect()
         }
         pub fn has(&self, kind: ViewKind, needle: &str) -> bool {
             self.texts(kind).iter().any(|t| t.contains(needle))
@@ -767,7 +969,11 @@ pub mod harness {
         testutil::relay().await
     }
 
-    pub async fn until(peers: &mut [&mut Peer], secs: u64, cond: impl Fn(&[&mut Peer]) -> bool) -> bool {
+    pub async fn until(
+        peers: &mut [&mut Peer],
+        secs: u64,
+        cond: impl Fn(&[&mut Peer]) -> bool,
+    ) -> bool {
         let end = std::time::Instant::now() + std::time::Duration::from_secs(secs);
         while std::time::Instant::now() < end {
             for p in peers.iter_mut() {
@@ -797,21 +1003,39 @@ mod tests {
         let card = b.card();
         a.cmd(&format!("/dm {card}"));
         a.cmd("mine, not yours");
-        let ok = until(&mut [&mut a, &mut b], 20, |p| p[1].has(ViewKind::Dm, "mine, not yours")).await;
+        let ok = until(&mut [&mut a, &mut b], 20, |p| {
+            p[1].has(ViewKind::Dm, "mine, not yours")
+        })
+        .await;
         assert!(ok, "bob never heard alice: {:?}", b.texts(ViewKind::Dm));
         let bob_view = b.app.views.iter().find(|v| v.kind == ViewKind::Dm).unwrap();
         assert_eq!(bob_view.who, Some(a.me()));
         b.focus_kind(ViewKind::Dm);
         b.cmd("not theirs");
-        let ok = until(&mut [&mut a, &mut b], 20, |p| p[0].has(ViewKind::Dm, "not theirs")).await;
+        let ok = until(&mut [&mut a, &mut b], 20, |p| {
+            p[0].has(ViewKind::Dm, "not theirs")
+        })
+        .await;
         assert!(ok, "alice never heard bob: {:?}", a.texts(ViewKind::Dm));
         a.cmd("again");
-        assert!(until(&mut [&mut a, &mut b], 20, |p| p[1].has(ViewKind::Dm, "again")).await);
+        assert!(
+            until(&mut [&mut a, &mut b], 20, |p| p[1]
+                .has(ViewKind::Dm, "again"))
+            .await
+        );
         // SAS matches on both ends.
         a.cmd("/verify");
         b.cmd("/verify");
-        let sa: Vec<String> = a.texts(ViewKind::Dm).into_iter().filter(|t| t.starts_with("SAS")).collect();
-        let sb: Vec<String> = b.texts(ViewKind::Dm).into_iter().filter(|t| t.starts_with("SAS")).collect();
+        let sa: Vec<String> = a
+            .texts(ViewKind::Dm)
+            .into_iter()
+            .filter(|t| t.starts_with("SAS"))
+            .collect();
+        let sb: Vec<String> = b
+            .texts(ViewKind::Dm)
+            .into_iter()
+            .filter(|t| t.starts_with("SAS"))
+            .collect();
         assert_eq!(sa, sb);
         assert!(!sa.is_empty());
         // Leaving leaves nothing.
@@ -824,7 +1048,10 @@ mod tests {
     async fn vault_keeps_masks_and_unions_then_burns() {
         use eigen_core::vault::{Vault, VaultData};
         let r = relay().await;
-        let path = std::env::temp_dir().join(format!("eigen-engine-vault-{}", random_u64())).to_string_lossy().into_owned();
+        let path = std::env::temp_dir()
+            .join(format!("eigen-engine-vault-{}", random_u64()))
+            .to_string_lossy()
+            .into_owned();
         let mut a = Peer::new(r.clone());
         a.e.vault = Some(Vault::create(&path, "pw", &VaultData::default(), None).unwrap());
         a.cmd("/mask");

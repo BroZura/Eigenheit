@@ -6,7 +6,13 @@ pub fn hour_now() -> u64 {
 }
 
 fn digest(hour: u64, mbox: &[u8; 32], blob_hash: &[u8; 32], nonce: u64) -> [u8; 32] {
-    h(&[b"eigen/pow/v1", &hour.to_be_bytes(), mbox, blob_hash, &nonce.to_be_bytes()])
+    h(&[
+        b"eigen/pow/v1",
+        &hour.to_be_bytes(),
+        mbox,
+        blob_hash,
+        &nonce.to_be_bytes(),
+    ])
 }
 
 pub fn leading_zeros(d: &[u8; 32]) -> u32 {
@@ -57,8 +63,15 @@ mod tests {
         let n = solve(5, &mbox, &blob, 12);
         assert!(check(5, &mbox, &blob, n, 12));
         // Bound to hour, mailbox and blob.
-        let tries = [check(6, &mbox, &blob, n, 12), check(5, &[8; 32], &blob, n, 12), check(5, &mbox, &[2u8; 960], n, 12)];
-        assert!(tries.iter().filter(|t| **t).count() <= 1, "PoW should not transfer");
+        let tries = [
+            check(6, &mbox, &blob, n, 12),
+            check(5, &[8; 32], &blob, n, 12),
+            check(5, &mbox, &[2u8; 960], n, 12),
+        ];
+        assert!(
+            tries.iter().filter(|t| **t).count() <= 1,
+            "PoW should not transfer"
+        );
     }
 
     #[test]

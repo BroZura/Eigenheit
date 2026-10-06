@@ -52,7 +52,11 @@ impl VaultData {
         if r.u8()? != 1 {
             return Err(Error::Malformed);
         }
-        let mut d = VaultData { wipe_other: r.u8()? == 1, active_mask: r.u16()?, ..Default::default() };
+        let mut d = VaultData {
+            wipe_other: r.u8()? == 1,
+            active_mask: r.u16()?,
+            ..Default::default()
+        };
         for _ in 0..r.u16()? {
             d.masks.push(Zeroizing::new(r.var()?.to_vec()));
         }
@@ -71,15 +75,25 @@ pub fn derive(pass: &str, salt: &[u8]) -> Result<Zeroizing<[u8; 32]>> {
     let params = argon2::Params::new(64 * 1024, 3, 1, Some(32)).map_err(|_| Error::Unknown)?;
     let a = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
     let mut k = Zeroizing::new([0u8; 32]);
-    a.hash_password_into(pass.as_bytes(), salt, k.as_mut()).map_err(|_| Error::Unknown)?;
+    a.hash_password_into(pass.as_bytes(), salt, k.as_mut())
+        .map_err(|_| Error::Unknown)?;
     Ok(k)
 }
 
 fn slot_size(file_len: usize) -> Option<usize> {
-    BUCKETS.iter().copied().find(|s| SALT + 2 * (s + OVER) == file_len)
+    BUCKETS
+        .iter()
+        .copied()
+        .find(|s| SALT + 2 * (s + OVER) == file_len)
 }
 
-fn seal_slot(key: &[u8; 32], salt: &[u8], i: usize, data: &VaultData, size: usize) -> Result<Vec<u8>> {
+fn seal_slot(
+    key: &[u8; 32],
+    salt: &[u8],
+    i: usize,
+    data: &VaultData,
+    size: usize,
+) -> Result<Vec<u8>> {
     let enc = data.encode();
     if enc.len() + 4 > size {
         return Err(Error::TooLong);
@@ -94,7 +108,12 @@ fn seal_slot(key: &[u8; 32], salt: &[u8], i: usize, data: &VaultData, size: usiz
 }
 
 fn write_all(path: &str, bytes: &[u8]) -> Result<()> {
-    let mut f = OpenOptions::new().write(true).create(true).truncate(false).open(path).map_err(|_| Error::Unknown)?;
+    let mut f = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .map_err(|_| Error::Unknown)?;
     f.write_all(bytes).map_err(|_| Error::Unknown)?;
     f.set_len(bytes.len() as u64).map_err(|_| Error::Unknown)?;
     f.sync_all().map_err(|_| Error::Unknown)
@@ -111,8 +130,17 @@ pub struct Vault {
 
 impl Vault {
     /// Create a new vault. `decoy`: a second passphrase and the content it opens.
-    pub fn create(path: &str, pass: &str, data: &VaultData, decoy: Option<(&str, &VaultData)>) -> Result<Vault> {
-        let size = BUCKETS.iter().copied().find(|s| data.encode().len() + 4 <= *s).ok_or(Error::TooLong)?;
+    pub fn create(
+        path: &str,
+        pass: &str,
+        data: &VaultData,
+        decoy: Option<(&str, &VaultData)>,
+    ) -> Result<Vault> {
+        let size = BUCKETS
+            .iter()
+            .copied()
+            .find(|s| data.encode().len() + 4 <= *s)
+            .ok_or(Error::TooLong)?;
         let salt: [u8; 32] = random();
         let key = derive(pass, &salt)?;
         // The real slot's position is random, so slot order says nothing.
@@ -128,7 +156,13 @@ impl Vault {
         file.extend(&slots[0]);
         file.extend(&slots[1]);
         write_all(path, &file)?;
-        Ok(Vault { path: path.to_string(), salt, slot, key, size })
+        Ok(Vault {
+            path: path.to_string(),
+            salt,
+            slot,
+            key,
+            size,
+        })
     }
 
     /// Open with a passphrase. Wrong passphrase and "not a vault" are the same error.
@@ -148,11 +182,22 @@ impl Vault {
                 if data.wipe_other {
                     // Duress: silently replace the other slot with fresh random bytes.
                     let o = 1 - i;
-                    fill_random(&mut file[SALT + o * (size + OVER)..SALT + (o + 1) * (size + OVER)]);
+                    fill_random(
+                        &mut file[SALT + o * (size + OVER)..SALT + (o + 1) * (size + OVER)],
+                    );
                     write_all(path, &file)?;
                 }
                 file.zeroize();
-                return Ok((Vault { path: path.to_string(), salt, slot: i, key, size }, data));
+                return Ok((
+                    Vault {
+                        path: path.to_string(),
+                        salt,
+                        slot: i,
+                        key,
+                        size,
+                    },
+                    data,
+                ));
             }
         }
         file.zeroize();
@@ -174,7 +219,9 @@ impl Vault {
     /// Overwrite the whole file with random bytes, sync, then unlink.
     /// Limits: SSD wear-levelling, journaling and snapshots may keep old blocks.
     pub fn burn(path: &str) -> bool {
-        let Ok(meta) = fs::metadata(path) else { return false };
+        let Ok(meta) = fs::metadata(path) else {
+            return false;
+        };
         let mut junk = vec![0u8; meta.len() as usize];
         for _ in 0..2 {
             fill_random(&mut junk);
@@ -189,12 +236,19 @@ mod tests {
     use super::*;
 
     fn tmp(name: &str) -> String {
-        let d = std::env::temp_dir().join(format!("eigen-vault-test-{}-{name}", crate::wire::hex(&random::<6>())));
+        let d = std::env::temp_dir().join(format!(
+            "eigen-vault-test-{}-{name}",
+            crate::wire::hex(&random::<6>())
+        ));
         d.to_string_lossy().into_owned()
     }
 
     fn data(n: usize) -> VaultData {
-        VaultData { masks: (0..n).map(|i| Zeroizing::new(vec![i as u8; 140])).collect(), pins: vec![[7u8; 32]], ..Default::default() }
+        VaultData {
+            masks: (0..n).map(|i| Zeroizing::new(vec![i as u8; 140])).collect(),
+            pins: vec![[7u8; 32]],
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -235,7 +289,10 @@ mod tests {
         assert_eq!(Vault::open(&p, "real").unwrap().1.masks.len(), 3);
         // Wipe mode: opening the duress slot destroys the real one, silently.
         let p2 = tmp("d");
-        let wipe = VaultData { wipe_other: true, ..data(1) };
+        let wipe = VaultData {
+            wipe_other: true,
+            ..data(1)
+        };
         Vault::create(&p2, "real", &data(3), Some(("calm", &wipe))).unwrap();
         let len = fs::metadata(&p2).unwrap().len();
         assert_eq!(Vault::open(&p2, "calm").unwrap().1.masks.len(), 1);

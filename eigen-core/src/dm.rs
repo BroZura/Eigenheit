@@ -42,7 +42,12 @@ fn bundle_key(intro: &[u8; 16]) -> Zeroizing<[u8; 32]> {
 /// Blob carrying my signed prekey bundle (posted to `card.bundle_mbox()`).
 pub fn bundle_blob(m: &Mask) -> Result<Vec<u8>> {
     let mut v = vec![T_BUNDLE];
-    v.extend(seal_fixed(&bundle_key(&m.intro), &Bundle::of(m).encode(), 256, b"bundle")?);
+    v.extend(seal_fixed(
+        &bundle_key(&m.intro),
+        &Bundle::of(m).encode(),
+        256,
+        b"bundle",
+    )?);
     blob(&v)
 }
 
@@ -99,7 +104,14 @@ fn decode_payload(b: &[u8]) -> Result<(Incoming, [u8; 32])> {
     let ttl = r.u32()?;
     let reply = r.arr()?;
     let text = String::from_utf8(r.var()?.to_vec()).map_err(|_| Error::Malformed)?;
-    Ok((Incoming { kind, ttl: ttl.clamp(10, 7 * 86400), text }, reply))
+    Ok((
+        Incoming {
+            kind,
+            ttl: ttl.clamp(10, 7 * 86400),
+            text,
+        },
+        reply,
+    ))
 }
 
 pub struct MySecret {
@@ -146,14 +158,26 @@ fn bind_msg(ik: &[u8; 32], ek: &[u8; 32]) -> Vec<u8> {
 
 impl Session {
     /// Start a DM with `card`, given its bundle and possibly a one-time prekey.
-    pub fn start(me: &Mask, card: &Card, bundle: &Bundle, opk: Option<(u32, [u8; 32])>) -> Result<Session> {
+    pub fn start(
+        me: &Mask,
+        card: &Card,
+        bundle: &Bundle,
+        opk: Option<(u32, [u8; 32])>,
+    ) -> Result<Session> {
         let i = x3dh::initiate(me, card, bundle, opk)?;
         let bind = me.sign(&bind_msg(&me.ik_pub(), &i.ek_pub));
         Ok(Session {
             peer: card.who,
             ek: i.ek_pub,
             ratchet: Ratchet::init_alice(&i.sk, bundle.spk, i.ad),
-            intro: Some(IntroHeader { ek: i.ek_pub, spk_id: bundle.spk_id, opk_id: i.opk_id, mbox: card.intro_mbox(), seal_key: i.seal_key, bind }),
+            intro: Some(IntroHeader {
+                ek: i.ek_pub,
+                spk_id: bundle.spk_id,
+                opk_id: i.opk_id,
+                mbox: card.intro_mbox(),
+                seal_key: i.seal_key,
+                bind,
+            }),
             peer_mbox: None,
             mine: Vec::new(),
             last_epoch: [0; 32],
@@ -174,7 +198,10 @@ impl Session {
             for m in self.mine.iter_mut().filter(|m| m.retired.is_none()) {
                 m.retired = Some(t);
             }
-            self.mine.push(MySecret { secret: random(), retired: None });
+            self.mine.push(MySecret {
+                secret: random(),
+                retired: None,
+            });
             self.last_epoch = epoch;
         }
         let reply = self.mine.last().map(|m| m.secret).unwrap_or_default();
@@ -209,7 +236,12 @@ impl Session {
 
     /// A DM blob that arrived at one of my mailboxes.
     pub fn open(&mut self, mbox: &Mbox, b: &[u8]) -> Result<Incoming> {
-        let secret = self.mine.iter().find(|m| mbox_id(&m.secret) == *mbox).map(|m| m.secret).ok_or(Error::Unknown)?;
+        let secret = self
+            .mine
+            .iter()
+            .find(|m| mbox_id(&m.secret) == *mbox)
+            .map(|m| m.secret)
+            .ok_or(Error::Unknown)?;
         if b.first() != Some(&T_DM) {
             return Err(Error::Malformed);
         }
@@ -223,7 +255,11 @@ impl Session {
     /// Mailboxes to poll: the current one and those still within grace.
     pub fn mailboxes(&mut self) -> Vec<Mbox> {
         let t = crate::now();
-        self.mine.retain(|m| m.retired.map(|r| t.saturating_sub(r) < GRACE).unwrap_or(true));
+        self.mine.retain(|m| {
+            m.retired
+                .map(|r| t.saturating_sub(r) < GRACE)
+                .unwrap_or(true)
+        });
         self.mine.iter().map(|m| mbox_id(&m.secret)).collect()
     }
 }
@@ -253,7 +289,11 @@ pub fn open_intro(me: &mut Mask, b: &[u8], known: impl Fn(&[u8; 32]) -> bool) ->
     if spk_id != me.spk_id {
         return Err(Error::Unknown);
     }
-    let inner = open_fixed(&x3dh::seal_key_for(me, &ek), &b[41..41 + INTRO_SEAL + 40], &b[..41])?;
+    let inner = open_fixed(
+        &x3dh::seal_key_for(me, &ek),
+        &b[41..41 + INTRO_SEAL + 40],
+        &b[..41],
+    )?;
     let mut r = Reader::new(&inner);
     let alice = Who(r.arr()?);
     let alice_ik: [u8; 32] = r.arr()?;
@@ -295,7 +335,9 @@ mod tests {
         let (mbox, _, b1) = sa.seal(&alice, K_TEXT, "hello bob").unwrap();
         assert_eq!(mbox, card.intro_mbox());
         assert_eq!(b1.len(), BLOB);
-        let Intro::New(sb, inc) = open_intro(&mut bob, &b1, |_| false).unwrap() else { panic!() };
+        let Intro::New(sb, inc) = open_intro(&mut bob, &b1, |_| false).unwrap() else {
+            panic!()
+        };
         assert_eq!(inc.text, "hello bob");
         assert_eq!(sb.peer, alice.who());
         (alice, bob, sa, *sb)
@@ -306,7 +348,9 @@ mod tests {
         let (alice, mut bob, mut sa, mut sb) = handshake();
         // Alice writes again before Bob answers: still via intro, same session.
         let (_, _, b2) = sa.seal(&alice, K_TEXT, "still there?").unwrap();
-        let Intro::Existing(ek, rmsg) = open_intro(&mut bob, &b2, |e| *e == sb.ek).unwrap() else { panic!() };
+        let Intro::Existing(ek, rmsg) = open_intro(&mut bob, &b2, |e| *e == sb.ek).unwrap() else {
+            panic!()
+        };
         assert_eq!(ek, sb.ek);
         assert_eq!(sb.open_existing_intro(&rmsg).unwrap().text, "still there?");
         // Bob answers to Alice's announced mailbox.
@@ -329,14 +373,19 @@ mod tests {
     fn relay_sees_no_sender() {
         let (alice, _bob, mut sa, _sb) = handshake();
         let (_, _, b) = sa.seal(&alice, K_TEXT, "x").unwrap();
-        let hay = b.windows(32).any(|w| w == alice.who().0 || w == alice.ik_pub());
+        let hay = b
+            .windows(32)
+            .any(|w| w == alice.who().0 || w == alice.ik_pub());
         assert!(!hay, "sender identity must not appear in clear");
     }
 
     #[test]
     fn too_long_refused() {
         let (alice, _b, mut sa, _sb) = handshake();
-        assert_eq!(sa.seal(&alice, K_TEXT, &"x".repeat(DM_TEXT_MAX + 1)).err(), Some(Error::TooLong));
+        assert_eq!(
+            sa.seal(&alice, K_TEXT, &"x".repeat(DM_TEXT_MAX + 1)).err(),
+            Some(Error::TooLong)
+        );
     }
 
     #[test]

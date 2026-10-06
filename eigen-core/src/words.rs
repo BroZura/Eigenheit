@@ -8,14 +8,17 @@ pub fn adjective(i: u8) -> &'static str {
 }
 
 pub fn noun(i: u8) -> &'static str {
-    NOUN_RAW.split_whitespace().nth(i as usize).unwrap_or("mask")
+    NOUN_RAW
+        .split_whitespace()
+        .nth(i as usize)
+        .unwrap_or("mask")
 }
 
 /// Geometric glyphs only — no emoji. Each renders one cell wide in common fonts.
 pub const GLYPHS: &[char] = &[
-    '◆', '◇', '○', '●', '◐', '◑', '◒', '◓', '■', '□', '▲', '△', '▼', '▽', '◈', '◉', '◊', '✦',
-    '✧', '✶', '✷', '✸', '⊕', '⊗', '⊘', '⊙', '⊚', '⊛', '⌬', '⍟', '⎔', '⏣', '▣', '▤', '▥', '▦',
-    '▧', '▨', '▩', '◍', '◎', '◘', '◙', '◢', '◣', '◤', '◥', '⬡',
+    '◆', '◇', '○', '●', '◐', '◑', '◒', '◓', '■', '□', '▲', '△', '▼', '▽', '◈', '◉', '◊', '✦', '✧',
+    '✶', '✷', '✸', '⊕', '⊗', '⊘', '⊙', '⊚', '⊛', '⌬', '⍟', '⎔', '⏣', '▣', '▤', '▥', '▦', '▧', '▨',
+    '▩', '◍', '◎', '◘', '◙', '◢', '◣', '◤', '◥', '⬡',
 ];
 
 #[cfg(test)]

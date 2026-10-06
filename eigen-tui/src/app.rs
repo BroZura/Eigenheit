@@ -126,9 +126,15 @@ pub struct App {
 pub const HELP: &[(&str, &str)] = &[
     ("/mask", "put on a fresh mask (Ctrl-M where supported)"),
     ("/masks [n]", "list my masks, or wear mask n"),
-    ("/union [passphrase]", "form a union; prints its invite (Ctrl-U)"),
+    (
+        "/union [passphrase]",
+        "form a union; prints its invite (Ctrl-U)",
+    ),
     ("/join <invite|passphrase>", "enter a union"),
-    ("/leave", "leave this union or dm, instantly, without a trace"),
+    (
+        "/leave",
+        "leave this union or dm, instantly, without a trace",
+    ),
     ("/dm <card>", "open a dm with a mask's card"),
     ("/card", "show the card of the mask I wear"),
     ("/verify [name]", "fingerprint + SAS to compare out of band"),
@@ -244,11 +250,29 @@ impl App {
     }
 
     pub fn notice(&mut self, id: u64, text: impl Into<String>) {
-        self.push(id, Line { from: None, text: text.into(), kind: LineKind::Notice, at: now(), expires: None });
+        self.push(
+            id,
+            Line {
+                from: None,
+                text: text.into(),
+                kind: LineKind::Notice,
+                at: now(),
+                expires: None,
+            },
+        );
     }
 
     pub fn warn(&mut self, id: u64, text: impl Into<String>) {
-        self.push(id, Line { from: None, text: text.into(), kind: LineKind::Warn, at: now(), expires: None });
+        self.push(
+            id,
+            Line {
+                from: None,
+                text: text.into(),
+                kind: LineKind::Warn,
+                at: now(),
+                expires: None,
+            },
+        );
     }
 
     pub fn here_notice(&mut self, text: impl Into<String>) {
@@ -274,7 +298,8 @@ impl App {
     /// Panic key: three Ctrl-X within 1.5 s. Returns true when it fires.
     pub fn panic_press(&mut self) -> bool {
         let t = Instant::now();
-        self.panic_presses.retain(|p| t.duration_since(*p).as_millis() < 1500);
+        self.panic_presses
+            .retain(|p| t.duration_since(*p).as_millis() < 1500);
         self.panic_presses.push(t);
         self.panic_presses.len() >= 3
     }
@@ -290,7 +315,9 @@ impl App {
         } else {
             let v = self.view();
             if v.kind == ViewKind::Home {
-                self.here_notice("I speak in a union or a dm. /union, /join, /dm — /help for more.");
+                self.here_notice(
+                    "I speak in a union or a dm. /union, /join, /dm — /help for more.",
+                );
             } else {
                 self.outbox.push(Action::Say(v.id, line.to_string()));
             }
@@ -316,7 +343,9 @@ impl App {
         match name {
             "mask" => self.outbox.push(Action::NewMask),
             "masks" => match arg.parse::<usize>() {
-                Ok(n) if n >= 1 && n <= self.masks.len() => self.outbox.push(Action::SwitchMask(n - 1)),
+                Ok(n) if n >= 1 && n <= self.masks.len() => {
+                    self.outbox.push(Action::SwitchMask(n - 1))
+                }
                 _ => {
                     let list: Vec<String> = self
                         .masks
@@ -332,7 +361,9 @@ impl App {
                     }
                 }
             },
-            "union" => self.outbox.push(Action::NewUnion { passphrase: arg_opt }),
+            "union" => self.outbox.push(Action::NewUnion {
+                passphrase: arg_opt,
+            }),
             "join" if !arg.is_empty() => self.outbox.push(Action::Join(arg.to_string())),
             "leave" => {
                 if kind == ViewKind::Home {
@@ -359,14 +390,21 @@ impl App {
                 }
             }
             "mute" if !arg.is_empty() => {
-                let target = self.view().lines.iter().filter_map(|l| l.from).find(|w| w.name() == arg);
+                let target = self
+                    .view()
+                    .lines
+                    .iter()
+                    .filter_map(|l| l.from)
+                    .find(|w| w.name() == arg);
                 match target {
                     Some(w) => {
                         let v = &mut self.views[self.active];
                         if !v.muted.remove(&w) {
                             v.muted.insert(w);
                             v.lines.retain(|l| l.from != Some(w));
-                            self.here_notice(format!("{arg} is silent on my screen. /mute again to hear."));
+                            self.here_notice(format!(
+                                "{arg} is silent on my screen. /mute again to hear."
+                            ));
                         } else {
                             self.here_notice(format!("{arg} is audible again."));
                         }
@@ -424,6 +462,9 @@ mod tests {
         assert!(matches!(a.outbox.pop(), Some(Action::Burn)));
         a.input = "/union".into();
         a.submit();
-        assert!(matches!(a.outbox.pop(), Some(Action::NewUnion { passphrase: None })));
+        assert!(matches!(
+            a.outbox.pop(),
+            Some(Action::NewUnion { passphrase: None })
+        ));
     }
 }

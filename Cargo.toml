@@ -9,22 +9,22 @@ license = "AGPL-3.0-or-later"
 rust-version = "1.80"
 
 [workspace.dependencies]
-ed25519-dalek = { version = "2", default-features = false, features = ["std", "zeroize", "rand_core"] }
-x25519-dalek = { version = "2", default-features = false, features = ["static_secrets", "zeroize"] }
-chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
-blake2 = { version = "0.10", default-features = false }
-sha2 = { version = "0.10", default-features = false }
-sha1 = { version = "0.10", default-features = false }
-hkdf = { version = "0.12", default-features = false }
-hmac = { version = "0.12", default-features = false }
-argon2 = { version = "0.5", default-features = false, features = ["alloc", "zeroize"] }
-zeroize = { version = "1", features = ["zeroize_derive"] }
-rand_core = { version = "0.6", features = ["getrandom"] }
-tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros"] }
-ratatui = { version = "0.29", default-features = false, features = ["crossterm"] }
-crossterm = { version = "0.28", default-features = false, features = ["events"] }
-libc = "0.2"
-proptest = { version = "1", default-features = false, features = ["std"] }
+ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["std", "zeroize", "rand_core"] }
+x25519-dalek = { version = "=2.0.1", default-features = false, features = ["static_secrets", "zeroize"] }
+chacha20poly1305 = { version = "=0.10.1", default-features = false, features = ["alloc"] }
+blake2 = { version = "=0.10.6", default-features = false }
+sha2 = { version = "=0.10.9", default-features = false }
+sha1 = { version = "=0.10.7", default-features = false }
+hkdf = { version = "=0.12.4", default-features = false }
+hmac = { version = "=0.12.1", default-features = false }
+argon2 = { version = "=0.5.3", default-features = false, features = ["alloc", "zeroize"] }
+zeroize = { version = "=1.9.0", features = ["zeroize_derive"] }
+rand_core = { version = "=0.6.4", features = ["getrandom"] }
+tokio = { version = "=1.53.2", default-features = false, features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros"] }
+ratatui = { version = "=0.29.0", default-features = false, features = ["crossterm"] }
+crossterm = { version = "=0.28.1", default-features = false, features = ["events"] }
+libc = "=0.2.190"
+proptest = { version = "=1.11.0", default-features = false, features = ["std"] }
 
 [profile.release]
 panic = "abort"

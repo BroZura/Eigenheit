@@ -50,7 +50,11 @@ type Pending = Arc<Mutex<HashMap<u32, oneshot::Sender<Status>>>>;
 
 fn jitter(base: u64) -> Duration {
     let spread = base * 3 / 10;
-    let off = if spread == 0 { 0 } else { random_u64() % (2 * spread + 1) };
+    let off = if spread == 0 {
+        0
+    } else {
+        random_u64() % (2 * spread + 1)
+    };
     Duration::from_millis(base - spread + off)
 }
 
@@ -68,12 +72,20 @@ impl Link {
 
     pub async fn call(&self, op: Op) -> Result<Status, LinkError> {
         let (reply, rx) = oneshot::channel();
-        self.tx.send(Job { op, reply }).map_err(|_| LinkError::Down)?;
+        self.tx
+            .send(Job { op, reply })
+            .map_err(|_| LinkError::Down)?;
         rx.await.map_err(|_| LinkError::Down)
     }
 
     /// PUT with proof of work (at least `min_bits`), retrying when the relay asks for more.
-    pub async fn put(&self, mbox: Mbox, ttl: u32, blob: Vec<u8>, min_bits: u8) -> Result<(), LinkError> {
+    pub async fn put(
+        &self,
+        mbox: Mbox,
+        ttl: u32,
+        blob: Vec<u8>,
+        min_bits: u8,
+    ) -> Result<(), LinkError> {
         let mut bits = min_bits;
         for _ in 0..4 {
             let hour = pow::hour_now();
@@ -81,7 +93,16 @@ impl Link {
             let nonce = tokio::task::spawn_blocking(move || pow::solve(hour, &mbox, &b, bits))
                 .await
                 .map_err(|_| LinkError::Down)?;
-            match self.call(Op::Put { mbox, ttl, hour, nonce, blob: blob.clone() }).await? {
+            match self
+                .call(Op::Put {
+                    mbox,
+                    ttl,
+                    hour,
+                    nonce,
+                    blob: blob.clone(),
+                })
+                .await?
+            {
                 Status::Ok => return Ok(()),
                 Status::Pow(need) if need > bits && need <= 30 => bits = need,
                 _ => return Err(LinkError::Refused),
@@ -91,7 +112,12 @@ impl Link {
     }
 
     /// All items in a mailbox after `after`, one cell at a time.
-    pub async fn fetch_all(&self, mbox: Mbox, mut after: u64, limit: usize) -> Result<Vec<eigen_core::cell::Item>, LinkError> {
+    pub async fn fetch_all(
+        &self,
+        mbox: Mbox,
+        mut after: u64,
+        limit: usize,
+    ) -> Result<Vec<eigen_core::cell::Item>, LinkError> {
         let mut out = Vec::new();
         while out.len() < limit {
             match self.call(Op::Fetch { mbox, after }).await? {
@@ -193,9 +219,13 @@ async fn run(cfg: LinkCfg, mut rx: mpsc::UnboundedReceiver<Job>, state: Arc<Atom
                 }
             };
             if !cover {
-                if let Some(Job { op: Op::Put { .. }, .. }) = &job {
+                if let Some(Job {
+                    op: Op::Put { .. }, ..
+                }) = &job
+                {
                     if cfg.max_delay_ms > 0 {
-                        tokio::time::sleep(Duration::from_millis(random_u64() % cfg.max_delay_ms)).await;
+                        tokio::time::sleep(Duration::from_millis(random_u64() % cfg.max_delay_ms))
+                            .await;
                     }
                 }
             }
@@ -204,7 +234,13 @@ async fn run(cfg: LinkCfg, mut rx: mpsc::UnboundedReceiver<Job>, state: Arc<Atom
                 Some(j) => (j.op, Some(j.reply)),
                 None => (Op::Pad, None),
             };
-            let Ok(cell) = (Request { rid, op: op.clone() }).encode() else { continue };
+            let Ok(cell) = (Request {
+                rid,
+                op: op.clone(),
+            })
+            .encode() else {
+                continue;
+            };
             if let Some(r) = reply {
                 pending.lock().await.insert(rid, r);
             }
@@ -233,12 +269,28 @@ pub mod testutil {
     pub async fn relay() -> RelayAddr {
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = l.local_addr().unwrap().port();
-        tokio::spawn(eigen_relay::serve(l, eigen_relay::Config { pow_base: 4, ..Default::default() }));
-        RelayAddr { host: "127.0.0.1".into(), port }
+        tokio::spawn(eigen_relay::serve(
+            l,
+            eigen_relay::Config {
+                pow_base: 4,
+                ..Default::default()
+            },
+        ));
+        RelayAddr {
+            host: "127.0.0.1".into(),
+            port,
+        }
     }
 
     pub fn cfg(relay: RelayAddr, cover: bool) -> LinkCfg {
-        LinkCfg { relay, socks: None, isolation: "t".into(), cover: Arc::new(AtomicBool::new(cover)), cover_ms: 20, max_delay_ms: 5 }
+        LinkCfg {
+            relay,
+            socks: None,
+            isolation: "t".into(),
+            cover: Arc::new(AtomicBool::new(cover)),
+            cover_ms: 20,
+            max_delay_ms: 5,
+        }
     }
 }
 
@@ -253,7 +305,9 @@ mod tests {
             let link = Link::spawn(cfg(relay().await, cover));
             let m = [9u8; 32];
             for i in 0..3u8 {
-                link.put(m, 60, eigen_core::cell::blob(&[i]).unwrap(), 6).await.unwrap();
+                link.put(m, 60, eigen_core::cell::blob(&[i]).unwrap(), 6)
+                    .await
+                    .unwrap();
             }
             let all = link.fetch_all(m, 0, 10).await.unwrap();
             assert_eq!(all.len(), 3);
@@ -277,10 +331,24 @@ mod tests {
                 c2.fetch_add(1, Ordering::Relaxed);
                 let r = Request::decode(&cell).unwrap();
                 assert_eq!(r.op, Op::Pad, "idle link sends only padding");
-                s.write_all(&Response { rid: r.rid, status: Status::Pad }.encode()).await.unwrap();
+                s.write_all(
+                    &Response {
+                        rid: r.rid,
+                        status: Status::Pad,
+                    }
+                    .encode(),
+                )
+                .await
+                .unwrap();
             }
         });
-        let mut c = cfg(RelayAddr { host: "127.0.0.1".into(), port }, true);
+        let mut c = cfg(
+            RelayAddr {
+                host: "127.0.0.1".into(),
+                port,
+            },
+            true,
+        );
         c.cover_ms = 50;
         let _link = Link::spawn(c);
         tokio::time::sleep(Duration::from_millis(300)).await;

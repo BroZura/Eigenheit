@@ -62,7 +62,10 @@ pub struct RelayAddr {
 impl RelayAddr {
     pub fn parse(s: &str) -> Option<RelayAddr> {
         let (h, p) = s.trim().rsplit_once(':')?;
-        Some(RelayAddr { host: h.trim_matches(['[', ']']).to_string(), port: p.parse().ok()? })
+        Some(RelayAddr {
+            host: h.trim_matches(['[', ']']).to_string(),
+            port: p.parse().ok()?,
+        })
     }
     pub fn is_onion(&self) -> bool {
         self.host.ends_with(".onion")
@@ -98,7 +101,10 @@ mod tests {
             s.read_exact(&mut host).await.unwrap();
             s.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await.unwrap();
             s.write_all(b"ok").await.unwrap();
-            (String::from_utf8(user).unwrap(), String::from_utf8(host[..host.len() - 2].to_vec()).unwrap())
+            (
+                String::from_utf8(user).unwrap(),
+                String::from_utf8(host[..host.len() - 2].to_vec()).unwrap(),
+            )
         });
         let mut s = connect(&addr, "x.onion", 7777, "circuit-a").await.unwrap();
         let mut ok = [0u8; 2];

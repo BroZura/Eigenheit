@@ -33,7 +33,12 @@ pub struct UnionKeys {
 impl UnionKeys {
     fn from_secret(secret: [u8; 32], pow: u8) -> UnionKeys {
         let ctrl = kdf32(&[0u8; 32], &secret, b"eigen/union-ctrl");
-        UnionKeys { uid: h(&[b"eigen/uid", &secret]), secret: Zeroizing::new(secret), ctrl, pow }
+        UnionKeys {
+            uid: h(&[b"eigen/uid", &secret]),
+            secret: Zeroizing::new(secret),
+            ctrl,
+            pow,
+        }
     }
     pub fn generate(pow: u8) -> UnionKeys {
         Self::from_secret(random(), pow)
@@ -43,7 +48,8 @@ impl UnionKeys {
         let params = argon2::Params::new(64 * 1024, 3, 1, Some(32)).map_err(|_| Error::Unknown)?;
         let a = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
         let mut out = [0u8; 32];
-        a.hash_password_into(pass.trim().as_bytes(), b"eigen/union-pass/v1", &mut out).map_err(|_| Error::Unknown)?;
+        a.hash_password_into(pass.trim().as_bytes(), b"eigen/union-pass/v1", &mut out)
+            .map_err(|_| Error::Unknown)?;
         let k = Self::from_secret(out, DEFAULT_POW);
         out.zeroize();
         Ok(k)
@@ -58,7 +64,10 @@ impl UnionKeys {
         s
     }
     pub fn parse_invite(s: &str) -> Result<UnionKeys> {
-        let body = s.trim().strip_prefix(INVITE_PREFIX).ok_or(Error::Malformed)?;
+        let body = s
+            .trim()
+            .strip_prefix(INVITE_PREFIX)
+            .ok_or(Error::Malformed)?;
         let mut raw = Zeroizing::new(unbase32(body)?);
         if raw.len() != 36 || h(&[b"eigen/invite", &raw[..33]])[..3] != raw[33..] {
             return Err(Error::Malformed);
@@ -98,13 +107,33 @@ impl UnionKeys {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Body {
-    Join { mx: [u8; 32] },
-    Hello { mx: [u8; 32], ends_at: u64, term: u32, to: Who },
-    Skey { gen: u32, eph: [u8; 32], entries: Vec<([u8; 8], Vec<u8>)> },
-    Msg { gen: u32, idx: u32, ct: Vec<u8> },
+    Join {
+        mx: [u8; 32],
+    },
+    Hello {
+        mx: [u8; 32],
+        ends_at: u64,
+        term: u32,
+        to: Who,
+    },
+    Skey {
+        gen: u32,
+        eph: [u8; 32],
+        entries: Vec<([u8; 8], Vec<u8>)>,
+    },
+    Msg {
+        gen: u32,
+        idx: u32,
+        ct: Vec<u8>,
+    },
     Leave,
-    Renew { term: u32 },
-    Drop { target: Who, term: u32 },
+    Renew {
+        term: u32,
+    },
+    Drop {
+        target: Who,
+        term: u32,
+    },
 }
 
 impl Body {
@@ -125,7 +154,12 @@ impl Body {
             Body::Join { mx } => {
                 w.bytes(mx).bytes(&random::<16>());
             }
-            Body::Hello { mx, ends_at, term, to } => {
+            Body::Hello {
+                mx,
+                ends_at,
+                term,
+                to,
+            } => {
                 w.bytes(mx).u64(*ends_at).u32(*term).bytes(&to.0);
             }
             Body::Skey { gen, eph, entries } => {
@@ -153,7 +187,12 @@ impl Body {
         let mut r = Reader::new(b);
         Ok(match kind {
             1 => Body::Join { mx: r.arr()? },
-            2 => Body::Hello { mx: r.arr()?, ends_at: r.u64()?, term: r.u32()?, to: Who(r.arr()?) },
+            2 => Body::Hello {
+                mx: r.arr()?,
+                ends_at: r.u64()?,
+                term: r.u32()?,
+                to: Who(r.arr()?),
+            },
             3 => {
                 let gen = r.u32()?;
                 let eph = r.arr()?;
@@ -164,10 +203,17 @@ impl Body {
                 }
                 Body::Skey { gen, eph, entries }
             }
-            4 => Body::Msg { gen: r.u32()?, idx: r.u32()?, ct: r.var()?.to_vec() },
+            4 => Body::Msg {
+                gen: r.u32()?,
+                idx: r.u32()?,
+                ct: r.var()?.to_vec(),
+            },
             5 => Body::Leave,
             6 => Body::Renew { term: r.u32()? },
-            7 => Body::Drop { target: Who(r.arr()?), term: r.u32()? },
+            7 => Body::Drop {
+                target: Who(r.arr()?),
+                term: r.u32()?,
+            },
             _ => return Err(Error::Malformed),
         })
     }
@@ -231,7 +277,11 @@ fn msg_ad(uid: &[u8; 32], from: &Who, gen: u32, idx: u32) -> Vec<u8> {
 
 impl SenderChain {
     pub fn fresh(gen: u32) -> SenderChain {
-        SenderChain { gen, ck: random(), idx: 0 }
+        SenderChain {
+            gen,
+            ck: random(),
+            idx: 0,
+        }
     }
 
     /// SKEY body distributing my *current* chain position to `to` (who, member key).
@@ -247,10 +297,22 @@ impl SenderChain {
                     .map(|(who, mx)| {
                         let dh = eph.diffie_hellman(&PublicKey::from(*mx)).to_bytes();
                         // Fresh ephemeral per SKEY: each entry key is single-use, so a zero nonce is safe.
-                        (tag(who), aead_seal(&entry_key(&dh, uid), &[0u8; 24], &pt, &self.gen.to_be_bytes()))
+                        (
+                            tag(who),
+                            aead_seal(
+                                &entry_key(&dh, uid),
+                                &[0u8; 24],
+                                &pt,
+                                &self.gen.to_be_bytes(),
+                            ),
+                        )
                     })
                     .collect();
-                Body::Skey { gen: self.gen, eph: PublicKey::from(&eph).to_bytes(), entries }
+                Body::Skey {
+                    gen: self.gen,
+                    eph: PublicKey::from(&eph).to_bytes(),
+                    entries,
+                }
             })
             .collect()
     }
@@ -268,7 +330,11 @@ impl SenderChain {
         let mut pt = Zeroizing::new(w.finish());
         pt.resize(MSG_PAD, 0);
         let ct = MessageKey::from_bytes(mk).seal(&pt, &msg_ad(uid, me, self.gen, idx));
-        Ok(Body::Msg { gen: self.gen, idx, ct })
+        Ok(Body::Msg {
+            gen: self.gen,
+            idx,
+            ct,
+        })
     }
 }
 
@@ -288,13 +354,25 @@ impl Drop for RecvChain {
 }
 
 impl RecvChain {
-    pub fn open_skey(uid: &[u8; 32], me: &Who, my_mx: &StaticSecret, gen: u32, eph: &[u8; 32], entries: &[([u8; 8], Vec<u8>)]) -> Option<RecvChain> {
+    pub fn open_skey(
+        uid: &[u8; 32],
+        me: &Who,
+        my_mx: &StaticSecret,
+        gen: u32,
+        eph: &[u8; 32],
+        entries: &[([u8; 8], Vec<u8>)],
+    ) -> Option<RecvChain> {
         let t = tag(me);
         let (_, ct) = entries.iter().find(|(et, _)| *et == t)?;
         let dh = my_mx.diffie_hellman(&PublicKey::from(*eph)).to_bytes();
         let pt = aead_open(&entry_key(&dh, uid), &[0u8; 24], ct, &gen.to_be_bytes()).ok()?;
         let mut r = Reader::new(&pt);
-        Some(RecvChain { gen, ck: r.arr().ok()?, idx: r.u32().ok()?, skipped: HashMap::new() })
+        Some(RecvChain {
+            gen,
+            ck: r.arr().ok()?,
+            idx: r.u32().ok()?,
+            skipped: HashMap::new(),
+        })
     }
 
     pub fn decrypt(&mut self, uid: &[u8; 32], from: &Who, idx: u32, ct: &[u8]) -> Result<String> {
@@ -375,23 +453,45 @@ mod tests {
         let mx_b = StaticSecret::random_from_rng(rand_core::OsRng);
         let mx_c = StaticSecret::random_from_rng(rand_core::OsRng);
         let mut chain = SenderChain::fresh(1);
-        let to = [(b.who(), PublicKey::from(&mx_b).to_bytes()), (c.who(), PublicKey::from(&mx_c).to_bytes())];
-        let Body::Skey { gen, eph, entries } = chain.distribute(&k.uid, &to).remove(0) else { panic!() };
+        let to = [
+            (b.who(), PublicKey::from(&mx_b).to_bytes()),
+            (c.who(), PublicKey::from(&mx_c).to_bytes()),
+        ];
+        let Body::Skey { gen, eph, entries } = chain.distribute(&k.uid, &to).remove(0) else {
+            panic!()
+        };
         let mut rb = RecvChain::open_skey(&k.uid, &b.who(), &mx_b, gen, &eph, &entries).unwrap();
         let mut rc = RecvChain::open_skey(&k.uid, &c.who(), &mx_c, gen, &eph, &entries).unwrap();
-        let msgs: Vec<Body> = (0..3).map(|i| chain.encrypt(&k.uid, &a.who(), &format!("m{i}")).unwrap()).collect();
+        let msgs: Vec<Body> = (0..3)
+            .map(|i| chain.encrypt(&k.uid, &a.who(), &format!("m{i}")).unwrap())
+            .collect();
         for (i, m) in msgs.iter().enumerate().rev() {
-            let Body::Msg { idx, ct, .. } = m else { panic!() };
-            assert_eq!(rb.decrypt(&k.uid, &a.who(), *idx, ct).unwrap(), format!("m{i}"));
-            assert_eq!(rc.decrypt(&k.uid, &a.who(), *idx, ct).unwrap(), format!("m{i}"));
+            let Body::Msg { idx, ct, .. } = m else {
+                panic!()
+            };
+            assert_eq!(
+                rb.decrypt(&k.uid, &a.who(), *idx, ct).unwrap(),
+                format!("m{i}")
+            );
+            assert_eq!(
+                rc.decrypt(&k.uid, &a.who(), *idx, ct).unwrap(),
+                format!("m{i}")
+            );
             assert!(rb.decrypt(&k.uid, &a.who(), *idx, ct).is_err(), "replay");
         }
         // c leaves: a rotates to a new generation distributed to b only.
         let mut chain2 = SenderChain::fresh(2);
-        let Body::Skey { gen, eph, entries } = chain2.distribute(&k.uid, &to[..1]).remove(0) else { panic!() };
-        assert!(RecvChain::open_skey(&k.uid, &c.who(), &mx_c, gen, &eph, &entries).is_none(), "c gets nothing");
+        let Body::Skey { gen, eph, entries } = chain2.distribute(&k.uid, &to[..1]).remove(0) else {
+            panic!()
+        };
+        assert!(
+            RecvChain::open_skey(&k.uid, &c.who(), &mx_c, gen, &eph, &entries).is_none(),
+            "c gets nothing"
+        );
         let mut rb2 = RecvChain::open_skey(&k.uid, &b.who(), &mx_b, gen, &eph, &entries).unwrap();
-        let Body::Msg { idx, ct, .. } = chain2.encrypt(&k.uid, &a.who(), "after").unwrap() else { panic!() };
+        let Body::Msg { idx, ct, .. } = chain2.encrypt(&k.uid, &a.who(), "after").unwrap() else {
+            panic!()
+        };
         assert_eq!(rb2.decrypt(&k.uid, &a.who(), idx, &ct).unwrap(), "after");
         // c's old chain cannot open the new generation.
         assert!(rc.decrypt(&k.uid, &a.who(), idx, &ct).is_err());
@@ -401,14 +501,18 @@ mod tests {
     fn skey_chunks_fit() {
         let k = UnionKeys::generate(16);
         let a = Mask::generate();
-        let to: Vec<(Who, [u8; 32])> = (0..30).map(|_| (Mask::generate().who(), random())).collect();
+        let to: Vec<(Who, [u8; 32])> = (0..30)
+            .map(|_| (Mask::generate().who(), random()))
+            .collect();
         let bodies = SenderChain::fresh(1).distribute(&k.uid, &to);
         assert_eq!(bodies.len(), 3);
         for b in bodies {
             let inner = sign(&a, &k.uid, &b);
             assert!(k.seal(&k.mbox(0), &inner).is_ok());
         }
-        let long = SenderChain::fresh(1).encrypt(&k.uid, &a.who(), &"x".repeat(UNION_TEXT_MAX)).unwrap();
+        let long = SenderChain::fresh(1)
+            .encrypt(&k.uid, &a.who(), &"x".repeat(UNION_TEXT_MAX))
+            .unwrap();
         assert!(k.seal(&k.mbox(0), &sign(&a, &k.uid, &long)).is_ok());
     }
 }

@@ -68,7 +68,13 @@ pub fn sas(a: &Who, b: &Who) -> String {
     let (lo, hi) = if a.0 <= b.0 { (a, b) } else { (b, a) };
     let s = h(&[b"eigen/sas", &lo.0, &hi.0]);
     let words: Vec<&str> = (0..5)
-        .map(|i| if i % 2 == 0 { adjective(s[i]) } else { noun(s[i]) })
+        .map(|i| {
+            if i % 2 == 0 {
+                adjective(s[i])
+            } else {
+                noun(s[i])
+            }
+        })
         .collect();
     let num = u32::from_be_bytes([0, s[5], s[6], s[7]]) % 1_000_000;
     format!("{} · {:06}", words.join(" "), num)
@@ -100,7 +106,10 @@ impl Card {
         let mut r = Reader::new(&raw);
         let who = Who(r.arr()?);
         who.verifying_key()?;
-        Ok(Card { who, intro: r.arr()? })
+        Ok(Card {
+            who,
+            intro: r.arr()?,
+        })
     }
     pub fn bundle_mbox(&self) -> [u8; 32] {
         h(&[b"eigen/bundle", &self.intro])
@@ -157,7 +166,10 @@ impl Mask {
         PublicKey::from(&self.spk).to_bytes()
     }
     pub fn card(&self) -> Card {
-        Card { who: self.who(), intro: self.intro }
+        Card {
+            who: self.who(),
+            intro: self.intro,
+        }
     }
     pub fn sign(&self, msg: &[u8]) -> [u8; 64] {
         self.sig.sign(msg).to_bytes()

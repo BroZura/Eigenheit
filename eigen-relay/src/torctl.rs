@@ -10,23 +10,42 @@ pub struct Control {
 
 /// Authenticate and run `ADD_ONION NEW:ED25519-V3 Flags=DiscardPK`.
 /// The private key is discarded by tor: the address dies with this process.
-pub async fn add_onion(addr: &str, password: Option<&str>, port: u16) -> io::Result<(String, Control)> {
+pub async fn add_onion(
+    addr: &str,
+    password: Option<&str>,
+    port: u16,
+) -> io::Result<(String, Control)> {
     let mut s = BufReader::new(TcpStream::connect(addr).await?);
     let proto = cmd(&mut s, "PROTOCOLINFO 1").await?;
     let auth = if let Some(pw) = password {
-        format!("AUTHENTICATE \"{}\"", pw.replace('\\', "\\\\").replace('"', "\\\""))
-    } else if proto.iter().any(|l| l.contains("METHODS=NULL") || l.contains("NULL")) && !proto.iter().any(|l| l.contains("COOKIE")) {
+        format!(
+            "AUTHENTICATE \"{}\"",
+            pw.replace('\\', "\\\\").replace('"', "\\\"")
+        )
+    } else if proto
+        .iter()
+        .any(|l| l.contains("METHODS=NULL") || l.contains("NULL"))
+        && !proto.iter().any(|l| l.contains("COOKIE"))
+    {
         "AUTHENTICATE".to_string()
     } else {
         let path = proto
             .iter()
-            .find_map(|l| l.split("COOKIEFILE=\"").nth(1).and_then(|r| r.split('"').next()))
+            .find_map(|l| {
+                l.split("COOKIEFILE=\"")
+                    .nth(1)
+                    .and_then(|r| r.split('"').next())
+            })
             .ok_or_else(|| io::Error::other("no auth"))?;
         let cookie = std::fs::read(path)?;
         format!("AUTHENTICATE {}", eigen_core::wire::hex(&cookie))
     };
     cmd(&mut s, &auth).await?;
-    let lines = cmd(&mut s, &format!("ADD_ONION NEW:ED25519-V3 Flags=DiscardPK Port={port},127.0.0.1:{port}")).await?;
+    let lines = cmd(
+        &mut s,
+        &format!("ADD_ONION NEW:ED25519-V3 Flags=DiscardPK Port={port},127.0.0.1:{port}"),
+    )
+    .await?;
     let id = lines
         .iter()
         .find_map(|l| l.strip_prefix("250-ServiceID="))
@@ -35,7 +54,9 @@ pub async fn add_onion(addr: &str, password: Option<&str>, port: u16) -> io::Res
 }
 
 async fn cmd(s: &mut BufReader<TcpStream>, line: &str) -> io::Result<Vec<String>> {
-    s.get_mut().write_all(format!("{line}\r\n").as_bytes()).await?;
+    s.get_mut()
+        .write_all(format!("{line}\r\n").as_bytes())
+        .await?;
     let mut out = Vec::new();
     loop {
         let mut l = String::new();
@@ -67,7 +88,11 @@ mod tests {
             let (s, _) = l.accept().await.unwrap();
             let mut s = BufReader::new(s);
             let mut seen = Vec::new();
-            for reply in ["250-PROTOCOLINFO 1\r\n250-AUTH METHODS=NULL\r\n250 OK\r\n", "250 OK\r\n", "250-ServiceID=abcdef\r\n250 OK\r\n"] {
+            for reply in [
+                "250-PROTOCOLINFO 1\r\n250-AUTH METHODS=NULL\r\n250 OK\r\n",
+                "250 OK\r\n",
+                "250-ServiceID=abcdef\r\n250 OK\r\n",
+            ] {
                 let mut line = String::new();
                 s.read_line(&mut line).await.unwrap();
                 seen.push(line.trim().to_string());
@@ -82,6 +107,8 @@ mod tests {
         drop(ctl);
         let seen = srv.await.unwrap();
         assert_eq!(seen[1], "AUTHENTICATE");
-        assert!(seen[2].contains("Flags=DiscardPK") && seen[2].contains("Port=7777,127.0.0.1:7777"));
+        assert!(
+            seen[2].contains("Flags=DiscardPK") && seen[2].contains("Port=7777,127.0.0.1:7777")
+        );
     }
 }

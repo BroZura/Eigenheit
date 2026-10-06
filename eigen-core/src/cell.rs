@@ -13,9 +13,20 @@ pub type Mbox = [u8; 32];
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Op {
     Pad,
-    Put { mbox: Mbox, ttl: u32, hour: u64, nonce: u64, blob: Vec<u8> },
-    Fetch { mbox: Mbox, after: u64 },
-    Take { mbox: Mbox },
+    Put {
+        mbox: Mbox,
+        ttl: u32,
+        hour: u64,
+        nonce: u64,
+        blob: Vec<u8>,
+    },
+    Fetch {
+        mbox: Mbox,
+        after: u64,
+    },
+    Take {
+        mbox: Mbox,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -67,11 +78,23 @@ impl Request {
             Op::Pad => {
                 w.u8(0).u32(self.rid);
             }
-            Op::Put { mbox, ttl, hour, nonce, blob } => {
+            Op::Put {
+                mbox,
+                ttl,
+                hour,
+                nonce,
+                blob,
+            } => {
                 if blob.len() != BLOB {
                     return Err(Error::Malformed);
                 }
-                w.u8(1).u32(self.rid).bytes(mbox).u32(*ttl).u64(*hour).u64(*nonce).bytes(blob);
+                w.u8(1)
+                    .u32(self.rid)
+                    .bytes(mbox)
+                    .u32(*ttl)
+                    .u64(*hour)
+                    .u64(*nonce)
+                    .bytes(blob);
             }
             Op::Fetch { mbox, after } => {
                 w.u8(2).u32(self.rid).bytes(mbox).u64(*after);
@@ -99,7 +122,10 @@ impl Request {
                 nonce: r.u64()?,
                 blob: r.take(BLOB)?.to_vec(),
             },
-            2 => Op::Fetch { mbox: r.arr()?, after: r.u64()? },
+            2 => Op::Fetch {
+                mbox: r.arr()?,
+                after: r.u64()?,
+            },
             3 => Op::Take { mbox: r.arr()? },
             _ => return Err(Error::Malformed),
         };
@@ -116,7 +142,12 @@ impl Response {
                 w.u8(0);
             }
             Status::Item(it) => {
-                w.u8(1).u64(it.seq).u64(it.hour).u64(it.nonce).u8(it.more as u8).bytes(&it.blob);
+                w.u8(1)
+                    .u64(it.seq)
+                    .u64(it.hour)
+                    .u64(it.nonce)
+                    .u8(it.more as u8)
+                    .bytes(&it.blob);
             }
             Status::Empty => {
                 w.u8(2);
@@ -182,8 +213,20 @@ mod tests {
     fn arb_op() -> impl Strategy<Value = Op> {
         prop_oneof![
             Just(Op::Pad),
-            (any::<[u8; 32]>(), any::<u32>(), any::<u64>(), any::<u64>(), proptest::collection::vec(any::<u8>(), BLOB..=BLOB))
-                .prop_map(|(mbox, ttl, hour, nonce, blob)| Op::Put { mbox, ttl, hour, nonce, blob }),
+            (
+                any::<[u8; 32]>(),
+                any::<u32>(),
+                any::<u64>(),
+                any::<u64>(),
+                proptest::collection::vec(any::<u8>(), BLOB..=BLOB)
+            )
+                .prop_map(|(mbox, ttl, hour, nonce, blob)| Op::Put {
+                    mbox,
+                    ttl,
+                    hour,
+                    nonce,
+                    blob
+                }),
             (any::<[u8; 32]>(), any::<u64>()).prop_map(|(mbox, after)| Op::Fetch { mbox, after }),
             any::<[u8; 32]>().prop_map(|mbox| Op::Take { mbox }),
         ]
@@ -221,8 +264,18 @@ mod tests {
 
     #[test]
     fn padding_is_random() {
-        let a = Request { rid: 1, op: Op::Pad }.encode().unwrap();
-        let b = Request { rid: 1, op: Op::Pad }.encode().unwrap();
+        let a = Request {
+            rid: 1,
+            op: Op::Pad,
+        }
+        .encode()
+        .unwrap();
+        let b = Request {
+            rid: 1,
+            op: Op::Pad,
+        }
+        .encode()
+        .unwrap();
         assert_eq!(a[..6], b[..6]);
         assert_ne!(a[6..], b[6..]);
         assert_eq!(blob(b"x").unwrap().len(), BLOB);

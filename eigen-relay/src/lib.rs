@@ -59,7 +59,10 @@ async fn conn(mut sock: TcpStream, store: Arc<Mutex<Store>>) -> std::io::Result<
                 let status = store.lock().await.handle(req.op);
                 Response { rid, status }
             }
-            Err(_) => Response { rid: 0, status: Status::Bad },
+            Err(_) => Response {
+                rid: 0,
+                status: Status::Bad,
+            },
         };
         sock.write_all(&resp.encode()).await?;
     }

@@ -1,0 +1,42 @@
+name: ci
+on: [push, pull_request]
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: never
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --all --check
+      - run: cargo build --locked --workspace
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked --workspace
+      - name: relay writes nothing, logs nothing
+        run: cargo run --locked -p eigen-relay -- --self-test
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install --locked cargo-audit
+      - run: cargo audit
+  reproducible:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: build twice, compare
+        run: |
+          export SOURCE_DATE_EPOCH=0 RUSTFLAGS="--remap-path-prefix=$HOME=~ --remap-path-prefix=$PWD=."
+          cargo build --locked --release --workspace
+          sha256sum target/release/eigen target/release/eigen-relay > a.sum
+          cargo clean
+          cargo build --locked --release --workspace
+          sha256sum target/release/eigen target/release/eigen-relay > b.sum
+          diff a.sum b.sum && cat a.sum

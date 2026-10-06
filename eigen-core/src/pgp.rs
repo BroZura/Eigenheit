@@ -15,7 +15,14 @@ const CREATED: u32 = 1_577_836_800;
 
 fn key_body(pk: &[u8; 32]) -> Vec<u8> {
     let mut w = Writer::new();
-    w.u8(4).u32(CREATED).u8(22).u8(ED25519_OID.len() as u8).bytes(&ED25519_OID).u16(263).u8(0x40).bytes(pk);
+    w.u8(4)
+        .u32(CREATED)
+        .u8(22)
+        .u8(ED25519_OID.len() as u8)
+        .bytes(&ED25519_OID)
+        .u16(263)
+        .u8(0x40)
+        .bytes(pk);
     w.finish()
 }
 
@@ -30,7 +37,11 @@ fn fpr_raw(body: &[u8]) -> [u8; 20] {
 /// PGP v4 fingerprint, grouped like `gpg --fingerprint`.
 pub fn fingerprint(who: &Who) -> String {
     let f = hex(&fpr_raw(&key_body(&who.0))).to_uppercase();
-    f.as_bytes().chunks(4).map(|c| std::str::from_utf8(c).unwrap_or("")).collect::<Vec<_>>().join(" ")
+    f.as_bytes()
+        .chunks(4)
+        .map(|c| std::str::from_utf8(c).unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn packet(tag: u8, body: &[u8]) -> Vec<u8> {
@@ -49,7 +60,11 @@ fn packet(tag: u8, body: &[u8]) -> Vec<u8> {
 
 fn mpi(b: &[u8]) -> Vec<u8> {
     let b: Vec<u8> = b.iter().copied().skip_while(|x| *x == 0).collect();
-    let bits = if b.is_empty() { 0 } else { (b.len() - 1) * 8 + (8 - b[0].leading_zeros() as usize) };
+    let bits = if b.is_empty() {
+        0
+    } else {
+        (b.len() - 1) * 8 + (8 - b[0].leading_zeros() as usize)
+    };
     let mut v = (bits as u16).to_be_bytes().to_vec();
     v.extend(b);
     v
@@ -106,7 +121,9 @@ const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012
 fn b64(d: &[u8]) -> String {
     let mut s = String::new();
     for c in d.chunks(3) {
-        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        let n = (c[0] as u32) << 16
+            | (*c.get(1).unwrap_or(&0) as u32) << 8
+            | *c.get(2).unwrap_or(&0) as u32;
         for i in 0..4 {
             if i <= c.len() {
                 s.push(B64[(n >> (18 - 6 * i) & 63) as usize] as char);
@@ -179,7 +196,11 @@ fn packets(mut d: &[u8]) -> Result<Vec<(u8, &[u8])>> {
                 (tag, ((l0 - 192) << 8) + l1 + 192, 3)
             } else if l0 == 255 {
                 let b = d.get(2..6).ok_or(Error::Malformed)?;
-                (tag, u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize, 6)
+                (
+                    tag,
+                    u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize,
+                    6,
+                )
             } else {
                 return Err(Error::Malformed);
             }
@@ -193,7 +214,11 @@ fn packets(mut d: &[u8]) -> Result<Vec<(u8, &[u8])>> {
                 }
                 2 => {
                     let b = d.get(1..5).ok_or(Error::Malformed)?;
-                    (tag, u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize, 5)
+                    (
+                        tag,
+                        u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize,
+                        5,
+                    )
                 }
                 _ => return Err(Error::Malformed),
             }
@@ -218,7 +243,12 @@ pub fn import(armored: &str) -> Result<Who> {
     let bin = unb64(&inner)?;
     let pk = packets(&bin)?;
     let (_, body) = pk.iter().find(|(t, _)| *t == 6).ok_or(Error::Malformed)?;
-    if body.len() != 6 + 1 + 9 + 2 + 33 || body[0] != 4 || body[5] != 22 || body[7..16] != ED25519_OID || body[18] != 0x40 {
+    if body.len() != 6 + 1 + 9 + 2 + 33
+        || body[0] != 4
+        || body[5] != 22
+        || body[7..16] != ED25519_OID
+        || body[18] != 0x40
+    {
         return Err(Error::Unknown);
     }
     let mut key = [0u8; 32];
@@ -232,11 +262,17 @@ pub fn import(armored: &str) -> Result<Who> {
             let hl = u16::from_be_bytes([sig[4], sig[5]]) as usize;
             let hashed = sig.get(..6 + hl).ok_or(Error::Malformed)?;
             let mut rest = &sig[6 + hl..];
-            let ul = u16::from_be_bytes([*rest.first().ok_or(Error::Malformed)?, *rest.get(1).ok_or(Error::Malformed)?]) as usize;
+            let ul = u16::from_be_bytes([
+                *rest.first().ok_or(Error::Malformed)?,
+                *rest.get(1).ok_or(Error::Malformed)?,
+            ]) as usize;
             rest = rest.get(2 + ul + 2..).ok_or(Error::Malformed)?;
             let mut rs = [0u8; 64];
             for half in 0..2 {
-                let bits = u16::from_be_bytes([*rest.first().ok_or(Error::Malformed)?, *rest.get(1).ok_or(Error::Malformed)?]) as usize;
+                let bits = u16::from_be_bytes([
+                    *rest.first().ok_or(Error::Malformed)?,
+                    *rest.get(1).ok_or(Error::Malformed)?,
+                ]) as usize;
                 let n = bits.div_ceil(8);
                 if n > 32 {
                     return Err(Error::Malformed);
@@ -246,7 +282,8 @@ pub fn import(armored: &str) -> Result<Who> {
                 rest = &rest[2 + n..];
             }
             let digest = sig_hash(body, uid, hashed);
-            vk.verify(&digest, &Signature::from_bytes(&rs)).map_err(|_| Error::Crypto)?;
+            vk.verify(&digest, &Signature::from_bytes(&rs))
+                .map_err(|_| Error::Crypto)?;
         }
     }
     Ok(who)
@@ -269,7 +306,13 @@ mod tests {
     fn tampered_signature_rejected() {
         let m = Mask::generate();
         let a = export(&m);
-        let bin = unb64(&a.lines().skip(2).take_while(|l| !l.starts_with('=')).collect::<String>()).unwrap();
+        let bin = unb64(
+            &a.lines()
+                .skip(2)
+                .take_while(|l| !l.starts_with('='))
+                .collect::<String>(),
+        )
+        .unwrap();
         let mut bad = bin.clone();
         let n = bad.len();
         bad[n - 5] ^= 0x55;
@@ -280,7 +323,10 @@ mod tests {
     fn crc24_known() {
         // CRC-24 of the empty string is the init value.
         assert_eq!(crc24(b""), 0xB704CE);
-        assert_eq!(unb64(&b64(b"any carnal pleas")).unwrap(), b"any carnal pleas");
+        assert_eq!(
+            unb64(&b64(b"any carnal pleas")).unwrap(),
+            b"any carnal pleas"
+        );
     }
 }
 

@@ -89,7 +89,11 @@ impl Header {
     }
     pub fn decode(b: &[u8]) -> Result<Header> {
         let mut r = Reader::new(b);
-        Ok(Header { dh: r.arr()?, pn: r.u32()?, n: r.u32()? })
+        Ok(Header {
+            dh: r.arr()?,
+            pn: r.u32()?,
+            n: r.u32()?,
+        })
     }
 }
 
@@ -124,12 +128,34 @@ impl Ratchet {
         let dhs = StaticSecret::random_from_rng(OsRng);
         let dh = dhs.diffie_hellman(&PublicKey::from(bob_pub));
         let (rk, ck) = kdf_rk(sk, dh.as_bytes());
-        Ratchet { dhs, dhr: Some(bob_pub), rk, cks: Some(ck), ckr: None, ns: 0, nr: 0, pn: 0, skipped: HashMap::new(), ad }
+        Ratchet {
+            dhs,
+            dhr: Some(bob_pub),
+            rk,
+            cks: Some(ck),
+            ckr: None,
+            ns: 0,
+            nr: 0,
+            pn: 0,
+            skipped: HashMap::new(),
+            ad,
+        }
     }
 
     /// Responder: its signed prekey is the first ratchet key.
     pub fn init_bob(sk: &[u8; 32], spk: StaticSecret, ad: Vec<u8>) -> Ratchet {
-        Ratchet { dhs: spk, dhr: None, rk: *sk, cks: None, ckr: None, ns: 0, nr: 0, pn: 0, skipped: HashMap::new(), ad }
+        Ratchet {
+            dhs: spk,
+            dhr: None,
+            rk: *sk,
+            cks: None,
+            ckr: None,
+            ns: 0,
+            nr: 0,
+            pn: 0,
+            skipped: HashMap::new(),
+            ad,
+        }
     }
 
     /// Public key of my current sending chain: changes once per DH ratchet step.
@@ -146,7 +172,11 @@ impl Ratchet {
         let ck = self.cks.ok_or(Error::Unknown)?;
         let (next, mk) = kdf_ck(&ck);
         self.cks = Some(next);
-        let h = Header { dh: self.epoch(), pn: self.pn, n: self.ns };
+        let h = Header {
+            dh: self.epoch(),
+            pn: self.pn,
+            n: self.ns,
+        };
         self.ns = self.ns.checked_add(1).ok_or(Error::Unknown)?;
         let hb = h.encode();
         let mut ad = self.ad.clone();
@@ -191,9 +221,15 @@ impl Ratchet {
     fn skip(&mut self, until: u32) -> Result<()> {
         if until < self.nr {
             // Already past this index and no skipped key: a replay.
-            return if self.ckr.is_some() { Err(Error::Replay) } else { Ok(()) };
+            return if self.ckr.is_some() {
+                Err(Error::Replay)
+            } else {
+                Ok(())
+            };
         }
-        if until - self.nr > MAX_SKIP || self.skipped.len() as u32 + (until - self.nr) > 4 * MAX_SKIP {
+        if until - self.nr > MAX_SKIP
+            || self.skipped.len() as u32 + (until - self.nr) > 4 * MAX_SKIP
+        {
             return Err(Error::Malformed);
         }
         if let (Some(mut ck), Some(dhr)) = (self.ckr, self.dhr) {
@@ -213,11 +249,17 @@ impl Ratchet {
         self.ns = 0;
         self.nr = 0;
         self.dhr = Some(dh);
-        let (rk, ckr) = kdf_rk(&self.rk, self.dhs.diffie_hellman(&PublicKey::from(dh)).as_bytes());
+        let (rk, ckr) = kdf_rk(
+            &self.rk,
+            self.dhs.diffie_hellman(&PublicKey::from(dh)).as_bytes(),
+        );
         self.rk = rk;
         self.ckr = Some(ckr);
         self.dhs = StaticSecret::random_from_rng(OsRng);
-        let (rk, cks) = kdf_rk(&self.rk, self.dhs.diffie_hellman(&PublicKey::from(dh)).as_bytes());
+        let (rk, cks) = kdf_rk(
+            &self.rk,
+            self.dhs.diffie_hellman(&PublicKey::from(dh)).as_bytes(),
+        );
         self.rk = rk;
         self.cks = Some(cks);
     }
@@ -233,7 +275,10 @@ mod tests {
         let sk = random::<32>();
         let spk = StaticSecret::random_from_rng(OsRng);
         let bob_pub = PublicKey::from(&spk).to_bytes();
-        (Ratchet::init_alice(&sk, bob_pub, b"ad".to_vec()), Ratchet::init_bob(&sk, spk, b"ad".to_vec()))
+        (
+            Ratchet::init_alice(&sk, bob_pub, b"ad".to_vec()),
+            Ratchet::init_bob(&sk, spk, b"ad".to_vec()),
+        )
     }
 
     #[test]

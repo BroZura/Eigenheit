@@ -15,7 +15,12 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Config { pow_base: 12, max_ttl: 24 * 3600, per_mailbox: 256, max_items: 65536 }
+        Config {
+            pow_base: 12,
+            max_ttl: 24 * 3600,
+            per_mailbox: 256,
+            max_items: 65536,
+        }
     }
 }
 
@@ -43,7 +48,13 @@ pub struct Store {
 
 impl Store {
     pub fn new(cfg: Config) -> Store {
-        Store { cfg, boxes: HashMap::new(), seen: HashMap::new(), total: 0, seq: 0 }
+        Store {
+            cfg,
+            boxes: HashMap::new(),
+            seen: HashMap::new(),
+            total: 0,
+            seq: 0,
+        }
     }
 
     pub fn items(&self) -> usize {
@@ -64,12 +75,22 @@ impl Store {
     pub fn handle_at(&mut self, op: Op, now: Instant, hour_now: u64) -> Status {
         match op {
             Op::Pad => Status::Pad,
-            Op::Put { mbox, ttl, hour, nonce, blob } => {
+            Op::Put {
+                mbox,
+                ttl,
+                hour,
+                nonce,
+                blob,
+            } => {
                 if blob.len() != BLOB || !(hour == hour_now || hour + 1 == hour_now) || ttl == 0 {
                     return Status::Bad;
                 }
                 if let Some(m) = self.boxes.get_mut(&mbox) {
-                    while m.recent.front().is_some_and(|t| now.duration_since(*t) > Duration::from_secs(60)) {
+                    while m
+                        .recent
+                        .front()
+                        .is_some_and(|t| now.duration_since(*t) > Duration::from_secs(60))
+                    {
                         m.recent.pop_front();
                     }
                 }
@@ -92,13 +113,21 @@ impl Store {
                     m.items.pop_front();
                     self.total -= 1;
                 }
-                m.items.push_back(Stored { seq: self.seq, expiry: now + ttl, hour, nonce, blob });
+                m.items.push_back(Stored {
+                    seq: self.seq,
+                    expiry: now + ttl,
+                    hour,
+                    nonce,
+                    blob,
+                });
                 self.total += 1;
                 self.seen.insert(tag, now + ttl);
                 Status::Ok
             }
             Op::Fetch { mbox, after } => {
-                let Some(m) = self.boxes.get(&mbox) else { return Status::Empty };
+                let Some(m) = self.boxes.get(&mbox) else {
+                    return Status::Empty;
+                };
                 let mut it = m.items.iter().filter(|s| s.seq > after && s.expiry > now);
                 match it.next() {
                     Some(s) => Status::Item(Item {
@@ -112,12 +141,20 @@ impl Store {
                 }
             }
             Op::Take { mbox } => {
-                let Some(m) = self.boxes.get_mut(&mbox) else { return Status::Empty };
+                let Some(m) = self.boxes.get_mut(&mbox) else {
+                    return Status::Empty;
+                };
                 while let Some(s) = m.items.pop_front() {
                     self.total -= 1;
                     if s.expiry > now {
                         let more = !m.items.is_empty();
-                        return Status::Item(Item { seq: s.seq, hour: s.hour, nonce: s.nonce, more, blob: s.blob });
+                        return Status::Item(Item {
+                            seq: s.seq,
+                            hour: s.hour,
+                            nonce: s.nonce,
+                            more,
+                            blob: s.blob,
+                        });
                     }
                 }
                 Status::Empty
@@ -141,7 +178,8 @@ impl Store {
                 }
                 keep
             });
-            m.recent.retain(|t| now.duration_since(*t) <= Duration::from_secs(60));
+            m.recent
+                .retain(|t| now.duration_since(*t) <= Duration::from_secs(60));
             !m.items.is_empty() || !m.recent.is_empty()
         });
         self.total -= removed;
@@ -158,31 +196,74 @@ mod tests {
         let hour = 100;
         let bits = s.required(&mbox);
         let nonce = pow::solve(hour, &mbox, &blob, bits);
-        s.handle_at(Op::Put { mbox, ttl, hour, nonce, blob }, now, hour)
+        s.handle_at(
+            Op::Put {
+                mbox,
+                ttl,
+                hour,
+                nonce,
+                blob,
+            },
+            now,
+            hour,
+        )
     }
 
     #[test]
     fn put_fetch_take_and_expire() {
-        let mut s = Store::new(Config { pow_base: 4, ..Config::default() });
+        let mut s = Store::new(Config {
+            pow_base: 4,
+            ..Config::default()
+        });
         let t0 = Instant::now();
         let m = [1u8; 32];
         assert_eq!(put(&mut s, m, 60, t0), Status::Ok);
         assert_eq!(put(&mut s, m, 60, t0), Status::Ok);
-        let Status::Item(a) = s.handle_at(Op::Fetch { mbox: m, after: 0 }, t0, 100) else { panic!() };
+        let Status::Item(a) = s.handle_at(Op::Fetch { mbox: m, after: 0 }, t0, 100) else {
+            panic!()
+        };
         assert!(a.more);
-        let Status::Item(b) = s.handle_at(Op::Fetch { mbox: m, after: a.seq }, t0, 100) else { panic!() };
+        let Status::Item(b) = s.handle_at(
+            Op::Fetch {
+                mbox: m,
+                after: a.seq,
+            },
+            t0,
+            100,
+        ) else {
+            panic!()
+        };
         assert!(!b.more);
-        assert_eq!(s.handle_at(Op::Fetch { mbox: m, after: b.seq }, t0, 100), Status::Empty);
-        assert!(matches!(s.handle_at(Op::Take { mbox: m }, t0, 100), Status::Item(_)));
+        assert_eq!(
+            s.handle_at(
+                Op::Fetch {
+                    mbox: m,
+                    after: b.seq
+                },
+                t0,
+                100
+            ),
+            Status::Empty
+        );
+        assert!(matches!(
+            s.handle_at(Op::Take { mbox: m }, t0, 100),
+            Status::Item(_)
+        ));
         assert_eq!(s.items(), 1);
         s.sweep_at(t0 + Duration::from_secs(61));
         assert_eq!(s.items(), 0);
-        assert_eq!(s.handle_at(Op::Fetch { mbox: m, after: 0 }, t0, 100), Status::Empty);
+        assert_eq!(
+            s.handle_at(Op::Fetch { mbox: m, after: 0 }, t0, 100),
+            Status::Empty
+        );
     }
 
     #[test]
     fn pow_enforced_and_rises() {
-        let mut s = Store::new(Config { pow_base: 8, ..Config::default() });
+        let mut s = Store::new(Config {
+            pow_base: 8,
+            ..Config::default()
+        });
         let m = [2u8; 32];
         let blob = eigen_core::cell::blob(b"y").unwrap();
         let t0 = Instant::now();
@@ -191,9 +272,35 @@ mod tests {
         while pow::check(100, &m, &blob, nonce, 8) {
             nonce += 1;
         }
-        assert_eq!(s.handle_at(Op::Put { mbox: m, ttl: 9, hour: 100, nonce, blob: blob.clone() }, t0, 100), Status::Pow(8));
+        assert_eq!(
+            s.handle_at(
+                Op::Put {
+                    mbox: m,
+                    ttl: 9,
+                    hour: 100,
+                    nonce,
+                    blob: blob.clone()
+                },
+                t0,
+                100
+            ),
+            Status::Pow(8)
+        );
         // Stale hour is refused.
-        assert_eq!(s.handle_at(Op::Put { mbox: m, ttl: 9, hour: 90, nonce, blob }, t0, 100), Status::Bad);
+        assert_eq!(
+            s.handle_at(
+                Op::Put {
+                    mbox: m,
+                    ttl: 9,
+                    hour: 90,
+                    nonce,
+                    blob
+                },
+                t0,
+                100
+            ),
+            Status::Bad
+        );
         for _ in 0..48 {
             put(&mut s, m, 60, t0);
         }
@@ -202,13 +309,26 @@ mod tests {
 
     #[test]
     fn replay_not_stored_twice() {
-        let mut s = Store::new(Config { pow_base: 4, ..Config::default() });
+        let mut s = Store::new(Config {
+            pow_base: 4,
+            ..Config::default()
+        });
         let m = [3u8; 32];
         let blob = eigen_core::cell::blob(b"z").unwrap();
         let nonce = pow::solve(100, &m, &blob, 6);
         let t0 = Instant::now();
         for _ in 0..3 {
-            s.handle_at(Op::Put { mbox: m, ttl: 9, hour: 100, nonce, blob: blob.clone() }, t0, 100);
+            s.handle_at(
+                Op::Put {
+                    mbox: m,
+                    ttl: 9,
+                    hour: 100,
+                    nonce,
+                    blob: blob.clone(),
+                },
+                t0,
+                100,
+            );
         }
         assert_eq!(s.items(), 1);
     }

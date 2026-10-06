@@ -5,9 +5,13 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
+};
 use crossterm::execute;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use tokio::sync::mpsc;
@@ -18,7 +22,8 @@ use eigen_tui::engine::{Engine, Net, NetCfg, NetEvent};
 use eigen_tui::tor::RelayAddr;
 use eigen_tui::{harden, ui};
 
-const USAGE: &str = "eigen [--relay HOST:PORT]... [--tor-socks 127.0.0.1:9050] [--i-accept-the-risk]
+const USAGE: &str =
+    "eigen [--relay HOST:PORT]... [--tor-socks 127.0.0.1:9050] [--i-accept-the-risk]
       [--cover] [--cover-ms 500] [--delay-ms 1500] [--vault PATH] [--no-boot]
 
   Default: RAM-only. Nothing touches the disk.
@@ -36,12 +41,23 @@ pub struct Opts {
 }
 
 fn parse_args() -> Result<Opts, String> {
-    let mut o = Opts { relays: Vec::new(), socks: "127.0.0.1:9050".into(), risk: false, cover: false, cover_ms: 500, delay_ms: 1500, vault: None, boot: true };
+    let mut o = Opts {
+        relays: Vec::new(),
+        socks: "127.0.0.1:9050".into(),
+        risk: false,
+        cover: false,
+        cover_ms: 500,
+        delay_ms: 1500,
+        vault: None,
+        boot: true,
+    };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut val = || args.next().ok_or_else(|| USAGE.to_string());
         match a.as_str() {
-            "--relay" => o.relays.push(RelayAddr::parse(&val()?).ok_or("relay must be HOST:PORT")?),
+            "--relay" => o
+                .relays
+                .push(RelayAddr::parse(&val()?).ok_or("relay must be HOST:PORT")?),
             "--tor-socks" => o.socks = val()?,
             "--i-accept-the-risk" => o.risk = true,
             "--cover" => o.cover = true,
@@ -93,7 +109,11 @@ fn main() {
         }
     };
     let hard = harden::apply();
-    let rt = match tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build() {
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+    {
         Ok(r) => r,
         Err(_) => std::process::exit(1),
     };
@@ -108,7 +128,9 @@ fn main() {
 }
 
 async fn run(opts: Opts, hard: harden::Hardening) -> std::io::Result<bool> {
-    let color = std::env::var_os("NO_COLOR").map(|v| v.is_empty()).unwrap_or(true);
+    let color = std::env::var_os("NO_COLOR")
+        .map(|v| v.is_empty())
+        .unwrap_or(true);
     let mut app = App::new(color);
     app.locked = hard.locked;
     app.cover = opts.cover;
@@ -145,19 +167,31 @@ async fn run(opts: Opts, hard: harden::Hardening) -> std::io::Result<bool> {
     let me = app.masks[app.active_mask].who.name();
     app.notice(0, format!("I am {me}. generated here, known nowhere."));
     if opts.relays.is_empty() {
-        app.notice(0, "no relays given: I can speak to nobody. start with --relay <onion>:<port>.");
+        app.notice(
+            0,
+            "no relays given: I can speak to nobody. start with --relay <onion>:<port>.",
+        );
     }
     if app.vault {
         app.notice(0, "my vault is open: masks, pins and /keep'd unions persist. never messages. /burn destroys it.");
     } else {
-        app.notice(0, "nothing is written to disk. /help for what is mine to do.");
+        app.notice(
+            0,
+            "nothing is written to disk. /help for what is mine to do.",
+        );
     }
 
     enable_raw_mode()?;
     let mut out = stdout();
     execute!(out, EnterAlternateScreen)?;
     let enhanced = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false)
-        && execute!(out, crossterm::event::PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)).is_ok();
+        && execute!(
+            out,
+            crossterm::event::PushKeyboardEnhancementFlags(
+                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+            )
+        )
+        .is_ok();
     let _guard = TermGuard { enhanced };
     let mut term = Terminal::new(CrosstermBackend::new(stdout()))?;
 
@@ -246,7 +280,9 @@ fn read_secret(prompt: &str) -> std::io::Result<zeroize::Zeroizing<String>> {
                 KeyCode::Backspace => {
                     s.pop();
                 }
-                KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => break Err(std::io::ErrorKind::Interrupted.into()),
+                KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                    break Err(std::io::ErrorKind::Interrupted.into())
+                }
                 KeyCode::Char(c) => s.push(c),
                 _ => {}
             },
@@ -259,7 +295,9 @@ fn read_secret(prompt: &str) -> std::io::Result<zeroize::Zeroizing<String>> {
     res.map(|_| s)
 }
 
-fn open_or_create(path: &str) -> Result<(eigen_core::vault::Vault, eigen_core::vault::VaultData), String> {
+fn open_or_create(
+    path: &str,
+) -> Result<(eigen_core::vault::Vault, eigen_core::vault::VaultData), String> {
     use eigen_core::vault::{Vault, VaultData};
     let io = |_| "aborted.".to_string();
     if std::path::Path::new(path).exists() {
@@ -274,15 +312,23 @@ fn open_or_create(path: &str) -> Result<(eigen_core::vault::Vault, eigen_core::v
     }
     println!("a duress passphrase opens a decoy instead (one fresh mask). it can also silently wipe the real vault.");
     let d = read_secret("duress passphrase (empty for none): ").map_err(io)?;
-    let real = VaultData { masks: vec![Mask::generate().to_bytes()], ..Default::default() };
+    let real = VaultData {
+        masks: vec![Mask::generate().to_bytes()],
+        ..Default::default()
+    };
     let v = if d.is_empty() {
         Vault::create(path, &p1, &real, None)
     } else {
         if *d == *p1 {
             return Err("the duress passphrase must differ. nothing written.".into());
         }
-        let mode = read_secret("on duress: [d]ecoy only, or [w]ipe the real vault? ").map_err(io)?;
-        let decoy = VaultData { masks: vec![Mask::generate().to_bytes()], wipe_other: mode.trim() == "w", ..Default::default() };
+        let mode =
+            read_secret("on duress: [d]ecoy only, or [w]ipe the real vault? ").map_err(io)?;
+        let decoy = VaultData {
+            masks: vec![Mask::generate().to_bytes()],
+            wipe_other: mode.trim() == "w",
+            ..Default::default()
+        };
         Vault::create(path, &p1, &real, Some((&d, &decoy)))
     }
     .map_err(|_| "could not write the vault.".to_string())?;

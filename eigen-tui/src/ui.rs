@@ -12,7 +12,9 @@ use eigen_core::now;
 const ACCENT: Color = Color::Indexed(160);
 const DIM: Color = Color::Indexed(243);
 const BASE: Color = Color::Indexed(250);
-const KEY_PALETTE: [u8; 14] = [109, 110, 138, 144, 146, 151, 174, 180, 181, 182, 187, 152, 139, 108];
+const KEY_PALETTE: [u8; 14] = [
+    109, 110, 138, 144, 146, 151, 174, 180, 181, 182, 187, 152, 139, 108,
+];
 
 pub const SIGIL: &[&str] = &[
     "┌───────────┐",
@@ -53,7 +55,9 @@ impl Pal {
         }
     }
     fn key(&self, w: &Who) -> Style {
-        self.s(Color::Indexed(KEY_PALETTE[w.color() as usize % KEY_PALETTE.len()]))
+        self.s(Color::Indexed(
+            KEY_PALETTE[w.color() as usize % KEY_PALETTE.len()],
+        ))
     }
 }
 
@@ -67,7 +71,11 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(3), Constraint::Length(2)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(3),
+            Constraint::Length(2),
+        ])
         .split(area);
     status(f, rows[0], app, &p);
     let side_w = if area.width >= 100 { 28 } else { 22 };
@@ -94,7 +102,10 @@ fn status(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
         ]),
         None => parts.push(vec![Span::styled("I am nobody yet", p.dim())]),
     }
-    parts.push(vec![Span::styled(format!("mask {}/{}", app.active_mask + 1, app.masks.len()), p.s(BASE))]);
+    parts.push(vec![Span::styled(
+        format!("mask {}/{}", app.active_mask + 1, app.masks.len()),
+        p.s(BASE),
+    )]);
     let (tor_s, tor_style) = match app.tor {
         TorState::Up => ("tor ●", p.s(BASE)),
         TorState::Connecting => ("tor ◌", p.dim()),
@@ -102,21 +113,37 @@ fn status(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
         TorState::ClearNet => ("CLEAR-NET ●", p.accent()),
     };
     parts.push(vec![Span::styled(tor_s, tor_style)]);
-    parts.push(vec![Span::styled(if app.cover { "cover ON" } else { "cover off" }, p.s(BASE))]);
+    parts.push(vec![Span::styled(
+        if app.cover { "cover ON" } else { "cover off" },
+        p.s(BASE),
+    )]);
     let v = app.view();
     let mut union_at = usize::MAX;
     if let (ViewKind::Union, Some(end)) = (v.kind, v.ends_at) {
         union_at = parts.len();
         let left = end.saturating_sub(now());
-        let st = if left <= 60 { p.accent().add_modifier(Modifier::BOLD) } else { p.s(BASE) };
-        parts.push(vec![Span::styled(format!("union ends {}", fmt_duration(left)), st)]);
+        let st = if left <= 60 {
+            p.accent().add_modifier(Modifier::BOLD)
+        } else {
+            p.s(BASE)
+        };
+        parts.push(vec![Span::styled(
+            format!("union ends {}", fmt_duration(left)),
+            st,
+        )]);
     } else if v.kind == ViewKind::Dm {
-        parts.push(vec![Span::styled(format!("words live {}", fmt_duration(v.ttl)), p.s(BASE))]);
+        parts.push(vec![Span::styled(
+            format!("words live {}", fmt_duration(v.ttl)),
+            p.s(BASE),
+        )]);
     }
     if !app.locked {
         parts.push(vec![Span::styled("swap: exposed", p.dim())]);
     }
-    parts.push(vec![Span::styled(if app.vault { "vault" } else { "ram-only" }, p.dim())]);
+    parts.push(vec![Span::styled(
+        if app.vault { "vault" } else { "ram-only" },
+        p.dim(),
+    )]);
     // Fit to width by priority (identity and the union countdown always stay),
     // then render in the original order.
     let prio = |i: usize, n: usize| -> usize {
@@ -129,7 +156,10 @@ fn status(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
         }
     };
     let n = parts.len();
-    let widths: Vec<usize> = parts.iter().map(|p| p.iter().map(|s| s.content.chars().count()).sum::<usize>() + 3).collect();
+    let widths: Vec<usize> = parts
+        .iter()
+        .map(|p| p.iter().map(|s| s.content.chars().count()).sum::<usize>() + 3)
+        .collect();
     let mut order: Vec<usize> = (0..n).collect();
     order.sort_by_key(|i| prio(*i, n));
     let mut keep = vec![false; n];
@@ -169,8 +199,18 @@ fn strip(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
             let active = i == app.active;
             let glyph = v.who.map(|w| w.glyph()).unwrap_or('·');
             let gs = v.who.map(|w| p.key(&w)).unwrap_or(p.dim());
-            let mark = if active { "▸" } else if v.unread { "•" } else { " " };
-            let mut ts = if active { p.s(BASE).add_modifier(Modifier::BOLD) } else { p.s(BASE) };
+            let mark = if active {
+                "▸"
+            } else if v.unread {
+                "•"
+            } else {
+                " "
+            };
+            let mut ts = if active {
+                p.s(BASE).add_modifier(Modifier::BOLD)
+            } else {
+                p.s(BASE)
+            };
             let mut tail = String::new();
             if let Some(end) = v.ends_at {
                 let left = end.saturating_sub(now());
@@ -193,9 +233,18 @@ fn strip(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
     lines.push(TLine::from(vec![
         Span::styled(if home { "▸" } else { " " }, p.accent()),
         Span::styled("◌ ", p.dim()),
-        Span::styled("alone", if home { p.s(BASE).add_modifier(Modifier::BOLD) } else { p.dim() }),
+        Span::styled(
+            "alone",
+            if home {
+                p.s(BASE).add_modifier(Modifier::BOLD)
+            } else {
+                p.dim()
+            },
+        ),
     ]));
-    let block = Block::default().borders(Borders::RIGHT).border_style(p.dim());
+    let block = Block::default()
+        .borders(Borders::RIGHT)
+        .border_style(p.dim());
     f.render_widget(Paragraph::new(lines).block(block), r);
 }
 
@@ -245,11 +294,21 @@ fn stream(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
     if let Some(w) = v.who {
         title.push(Span::styled(format!("{} ", w.glyph()), p.key(&w)));
     }
-    title.push(Span::styled(format!("{} ", v.title), p.s(BASE).add_modifier(Modifier::BOLD)));
-    let block = Block::default().borders(Borders::BOTTOM).border_style(p.dim()).title(TLine::from(title));
+    title.push(Span::styled(
+        format!("{} ", v.title),
+        p.s(BASE).add_modifier(Modifier::BOLD),
+    ));
+    let block = Block::default()
+        .borders(Borders::BOTTOM)
+        .border_style(p.dim())
+        .title(TLine::from(title));
     let inner = block.inner(r);
     f.render_widget(block, r);
-    let inner = Rect { x: inner.x + 1, width: inner.width.saturating_sub(1), ..inner };
+    let inner = Rect {
+        x: inner.x + 1,
+        width: inner.width.saturating_sub(1),
+        ..inner
+    };
     let width = inner.width as usize;
     let mut out: Vec<TLine> = Vec::new();
     for l in &v.lines {
@@ -260,7 +319,10 @@ fn stream(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
                 } else {
                     ("─ ", p.dim())
                 };
-                for (i, chunk) in wrap(&l.text, width.saturating_sub(2)).into_iter().enumerate() {
+                for (i, chunk) in wrap(&l.text, width.saturating_sub(2))
+                    .into_iter()
+                    .enumerate()
+                {
                     out.push(TLine::from(vec![
                         Span::styled(if i == 0 { mark } else { "  " }, st),
                         Span::styled(chunk, st),
@@ -277,12 +339,25 @@ fn stream(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
                 let head = name.chars().count() + 5;
                 let body_w = width.saturating_sub(head);
                 let narrow = body_w < 24;
-                let chunks = wrap(&l.text, if narrow { width.saturating_sub(2) } else { body_w });
-                let mut first = vec![Span::styled(format!("{} ", who.glyph()), ns), Span::styled(name, ns)];
+                let chunks = wrap(
+                    &l.text,
+                    if narrow {
+                        width.saturating_sub(2)
+                    } else {
+                        body_w
+                    },
+                );
+                let mut first = vec![
+                    Span::styled(format!("{} ", who.glyph()), ns),
+                    Span::styled(name, ns),
+                ];
                 if narrow {
                     out.push(TLine::from(first));
                     for c in chunks {
-                        out.push(TLine::from(vec![Span::styled("  ", p.dim()), Span::styled(c, p.s(BASE))]));
+                        out.push(TLine::from(vec![
+                            Span::styled("  ", p.dim()),
+                            Span::styled(c, p.s(BASE)),
+                        ]));
                     }
                 } else {
                     for (i, c) in chunks.into_iter().enumerate() {
@@ -303,7 +378,9 @@ fn stream(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
         }
     }
     let h = inner.height as usize;
-    let end = out.len().saturating_sub(app.scroll.min(out.len().saturating_sub(h)));
+    let end = out
+        .len()
+        .saturating_sub(app.scroll.min(out.len().saturating_sub(h)));
     let start = end.saturating_sub(h);
     let shown: Vec<TLine> = out.drain(start..end).collect();
     f.render_widget(Paragraph::new(shown), inner);
@@ -312,7 +389,9 @@ fn stream(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
 fn input(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
     let v = app.view();
     let pulse = v.kind == ViewKind::Union
-        && v.ends_at.map(|e| e.saturating_sub(now()) <= 60).unwrap_or(false)
+        && v.ends_at
+            .map(|e| e.saturating_sub(now()) <= 60)
+            .unwrap_or(false)
         && !v.renewed;
     let prompt = if pulse { "renew? › " } else { "› " };
     let prompt_style = if pulse && now().is_multiple_of(2) {
@@ -329,33 +408,59 @@ fn input(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
             Span::styled("/help · /union · /join · /dm", p.dim()),
         ])
     } else {
-        TLine::from(vec![Span::styled(prompt, prompt_style), Span::styled(shown.clone(), p.s(BASE))])
+        TLine::from(vec![
+            Span::styled(prompt, prompt_style),
+            Span::styled(shown.clone(), p.s(BASE)),
+        ])
     };
-    let row = Rect { y: r.y + 1, height: 1, ..r };
+    let row = Rect {
+        y: r.y + 1,
+        height: 1,
+        ..r
+    };
     f.render_widget(Paragraph::new(line), row);
     let cx = r.x + (prompt.chars().count() + shown.chars().count()) as u16;
-    f.set_cursor_position(Position { x: cx.min(r.x + r.width.saturating_sub(1)), y: row.y });
+    f.set_cursor_position(Position {
+        x: cx.min(r.x + r.width.saturating_sub(1)),
+        y: row.y,
+    });
 }
 
 fn help(f: &mut Frame, area: Rect, p: &Pal) {
     let w = area.width.min(76);
     let h = (HELP.len() as u16 + 4).min(area.height);
-    let r = Rect { x: area.x + (area.width - w) / 2, y: area.y + (area.height - h) / 2, width: w, height: h };
+    let r = Rect {
+        x: area.x + (area.width - w) / 2,
+        y: area.y + (area.height - h) / 2,
+        width: w,
+        height: h,
+    };
     f.render_widget(Clear, r);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(p.dim())
         .title(Span::styled(" what is mine to do ", p.accent()));
-    let key_w = HELP.iter().map(|(k, _)| k.len()).max().unwrap_or(10).min(26);
+    let key_w = HELP
+        .iter()
+        .map(|(k, _)| k.len())
+        .max()
+        .unwrap_or(10)
+        .min(26);
     let lines: Vec<TLine> = HELP
         .iter()
         .map(|(k, d)| {
             TLine::from(vec![
-                Span::styled(format!(" {:<key_w$} ", trunc(k, key_w)), p.s(BASE).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    format!(" {:<key_w$} ", trunc(k, key_w)),
+                    p.s(BASE).add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(*d, p.dim()),
             ])
         })
-        .chain(std::iter::once(TLine::from(Span::styled(" Esc to return", p.dim()))))
+        .chain(std::iter::once(TLine::from(Span::styled(
+            " Esc to return",
+            p.dim(),
+        ))))
         .collect();
     f.render_widget(Paragraph::new(lines).block(block), r);
 }
@@ -370,7 +475,13 @@ fn boot(f: &mut Frame, area: Rect, p: &Pal) {
         lines.push(TLine::from(Span::styled(*s, p.accent())).centered());
     }
     lines.push(TLine::from(""));
-    lines.push(TLine::from(Span::styled("E I G E N H E I T", p.s(BASE).add_modifier(Modifier::BOLD))).centered());
+    lines.push(
+        TLine::from(Span::styled(
+            "E I G E N H E I T",
+            p.s(BASE).add_modifier(Modifier::BOLD),
+        ))
+        .centered(),
+    );
     lines.push(TLine::from(""));
     lines.push(TLine::from(Span::styled(MOTTO, p.dim())).centered());
     f.render_widget(Paragraph::new(lines), area);
@@ -391,7 +502,11 @@ fn burn(f: &mut Frame, area: Rect, n: u16, p: &Pal) {
             seed ^= seed >> 7;
             seed ^= seed << 17;
             let roll = (seed % 1000) as f32 / 1000.0;
-            s.push(if roll < density * density { noise[(seed >> 20) as usize % noise.len()] } else { ' ' });
+            s.push(if roll < density * density {
+                noise[(seed >> 20) as usize % noise.len()]
+            } else {
+                ' '
+            });
         }
         lines.push(TLine::from(Span::styled(s, p.dim())));
     }
@@ -450,7 +565,9 @@ mod snapshot {
         let mut app = App::new(false);
         app.mode = Mode::Normal;
         app.tor = TorState::Up;
-        let ms: Vec<_> = (0..4).map(|_| eigen_core::identity::Mask::generate().who()).collect();
+        let ms: Vec<_> = (0..4)
+            .map(|_| eigen_core::identity::Mask::generate().who())
+            .collect();
         app.masks.push(MaskInfo { who: ms[0] });
         app.masks.push(MaskInfo { who: ms[3] });
         let mut v = View::new(5, ViewKind::Union, "union ochre-heron".into(), 0);
@@ -462,8 +579,24 @@ mod snapshot {
         app.add_view(d);
         app.active = 1;
         app.notice(5, "the union holds 3. it dissolves unless renewed.");
-        for (w, t) in [(ms[1], "no names here, only keys."), (ms[0], "the relay holds nothing but expiring noise, and that is the point of it all."), (ms[2], "renew at dusk.")] {
-            app.push(5, Line { from: Some(w), text: t.into(), kind: LineKind::Msg, at: 0, expires: None });
+        for (w, t) in [
+            (ms[1], "no names here, only keys."),
+            (
+                ms[0],
+                "the relay holds nothing but expiring noise, and that is the point of it all.",
+            ),
+            (ms[2], "renew at dusk."),
+        ] {
+            app.push(
+                5,
+                Line {
+                    from: Some(w),
+                    text: t.into(),
+                    kind: LineKind::Msg,
+                    at: 0,
+                    expires: None,
+                },
+            );
         }
         app.input = "mine, not yours".into();
         let mut t = Terminal::new(TestBackend::new(80, 24)).unwrap();

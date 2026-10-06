@@ -13,7 +13,10 @@ pub struct Hardening {
 
 pub fn apply() -> Hardening {
     let mut h = Hardening::default();
-    let zero = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    let zero = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
     // SAFETY: setrlimit reads a valid, initialised rlimit struct.
     h.no_core = unsafe { libc::setrlimit(libc::RLIMIT_CORE, &zero) } == 0;
     #[cfg(target_os = "linux")]
@@ -30,10 +33,16 @@ pub fn apply() -> Hardening {
 fn try_lock_memory() -> bool {
     #[cfg(target_os = "linux")]
     {
-        let inf = libc::rlimit { rlim_cur: libc::RLIM_INFINITY, rlim_max: libc::RLIM_INFINITY };
+        let inf = libc::rlimit {
+            rlim_cur: libc::RLIM_INFINITY,
+            rlim_max: libc::RLIM_INFINITY,
+        };
         // SAFETY: as above; failure is reported through the return value.
         let raised = unsafe { libc::setrlimit(libc::RLIMIT_MEMLOCK, &inf) } == 0;
-        let mut cur = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+        let mut cur = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
         // SAFETY: getrlimit writes into a valid stack struct.
         let ok = unsafe { libc::getrlimit(libc::RLIMIT_MEMLOCK, &mut cur) } == 0;
         if raised || (ok && cur.rlim_cur == libc::RLIM_INFINITY) {
