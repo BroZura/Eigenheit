@@ -5,6 +5,9 @@ all-features = false
 [advisories]
 version = 2
 yanked = "deny"
+# `paste` is an unmaintained compile-time proc-macro reached via ratatui; it is not
+# a vulnerability and never runs in the shipped binary. Revisit on the next ratatui bump.
+ignore = [{ id = "RUSTSEC-2024-0436", reason = "unmaintained build-time macro via ratatui, no known vulnerability" }]
 
 [licenses]
 version = 2
@@ -14,6 +17,7 @@ confidence-threshold = 0.9
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+allow-wildcard-paths = true
 # No telemetry, no HTTP clients, no update checkers, no logging frameworks in the graph.
 deny = [
   { name = "reqwest" }, { name = "hyper" }, { name = "ureq" }, { name = "curl" },

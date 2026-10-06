@@ -4,6 +4,7 @@ description = "EIGENHEIT relay: RAM-only, logless mailbox store"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish = false
 
 [dependencies]
 eigen-core = { path = "../eigen-core" }
