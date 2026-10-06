@@ -3,24 +3,74 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
 use eigen_core::identity::Who;
 use eigen_core::now;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum LineKind {
+    #[default]
+    Notice,
     Msg,
     Mine,
-    Notice,
     Warn,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Line {
     pub from: Option<Who>,
     pub text: String,
     pub kind: LineKind,
     pub at: u64,
     pub expires: Option<u64>,
+    /// Per-message id (lets the author take it back).
+    pub id: Option<[u8; 8]>,
+    /// `/me` action.
+    pub action: bool,
+    /// `/once`: vanishes 30 s after it was on my screen.
+    pub once: bool,
+    pub seen: bool,
+}
+
+/// Message kinds, shared by DMs and unions.
+pub const SAY_TEXT: u8 = 1;
+pub const SAY_HELLO: u8 = 2;
+pub const SAY_ONCE: u8 = 3;
+pub const SAY_UNSAY: u8 = 4;
+pub const SAY_ACTION: u8 = 5;
+pub const ONCE_SECS: u64 = 30;
+const LOCK_TRIES: u8 = 5;
+
+/// A screen lock: only a slow hash of the passphrase is held.
+pub struct Lock {
+    salt: [u8; 32],
+    hash: zeroize::Zeroizing<[u8; 32]>,
+    pub engaged: bool,
+    pub fails: u8,
+}
+
+impl Lock {
+    pub fn new(pass: &str) -> Option<Lock> {
+        let salt = eigen_core::crypto::random();
+        let hash = eigen_core::vault::derive(pass, &salt).ok()?;
+        Some(Lock {
+            salt,
+            hash,
+            engaged: true,
+            fails: 0,
+        })
+    }
+    pub fn check(&self, pass: &str) -> bool {
+        let Ok(h) = eigen_core::vault::derive(pass, &self.salt) else {
+            return false;
+        };
+        // Constant-time compare.
+        h.iter()
+            .zip(self.hash.iter())
+            .fold(0u8, |a, (x, y)| a | (x ^ y))
+            == 0
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -71,7 +121,11 @@ pub enum Action {
     Join(String),
     Leave(u64),
     Dm(String),
-    Say(u64, String),
+    Say(u64, u8, String),
+    Unsay(u64),
+    Trust(u64, Option<String>),
+    Who(u64),
+    Invite(u64),
     Ttl(u64, u64),
     Renew(u64),
     Drop(u64, String),
@@ -121,6 +175,18 @@ pub struct App {
     pub quit: bool,
     panic_presses: Vec<Instant>,
     next_id: u64,
+    /// Keys I have verified out of band (✓).
+    pub trusted: HashSet<Who>,
+    /// Shoulder-surfing veil: names and words hidden until a key is pressed.
+    pub veiled: bool,
+    pub veil_idle: Option<u64>,
+    pub lock: Option<Lock>,
+    pub lock_input: zeroize::Zeroizing<String>,
+    /// Burn myself if no key is pressed for this long.
+    pub deadman: Option<u64>,
+    pub last_key: Instant,
+    history: Vec<String>,
+    hist_pos: Option<usize>,
 }
 
 pub const HELP: &[(&str, &str)] = &[
@@ -142,6 +208,30 @@ pub const HELP: &[(&str, &str)] = &[
     ("/renew", "I stay for the next term of this union"),
     ("/drop <name>", "vote to rotate keys away from someone"),
     ("/mute <name>", "my screen, my rules: hide someone locally"),
+    ("/me <action>", "say what I do"),
+    (
+        "/once <words>",
+        "words that vanish 30 s after they are read",
+    ),
+    ("/unsay", "take back my last words here"),
+    ("/who", "who is in this union (as far as I can see)"),
+    ("/invite", "show this union's current invite"),
+    (
+        "/trust [name]",
+        "mark a key verified (✓) after comparing the SAS",
+    ),
+    (
+        "/veil [2m|off]",
+        "hide names and words now (Ctrl-V), or after idle",
+    ),
+    (
+        "/lock <passphrase>",
+        "lock the screen; 5 wrong tries burn everything",
+    ),
+    (
+        "/deadman <30m|off>",
+        "burn everything if I am idle that long",
+    ),
     ("/cover on|off", "constant-rate cover traffic"),
     ("/keep", "remember this union in my vault (toggle)"),
     ("/export [path]", "my PGP public key (screen, or file)"),
@@ -150,6 +240,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("/help", "this (F1)"),
     ("Tab / Shift-Tab", "next / previous union or dm"),
     ("PgUp / PgDn", "scroll"),
+    ("Up / Down", "my earlier lines (RAM only)"),
     ("Ctrl-L", "redraw"),
 ];
 
@@ -193,6 +284,15 @@ impl App {
             quit: false,
             panic_presses: Vec::new(),
             next_id: 1,
+            trusted: HashSet::new(),
+            veiled: false,
+            veil_idle: Some(300),
+            lock: None,
+            lock_input: zeroize::Zeroizing::new(String::new()),
+            deadman: None,
+            last_key: Instant::now(),
+            history: Vec::new(),
+            hist_pos: None,
         }
     }
 
@@ -258,6 +358,7 @@ impl App {
                 kind: LineKind::Notice,
                 at: now(),
                 expires: None,
+                ..Default::default()
             },
         );
     }
@@ -271,8 +372,200 @@ impl App {
                 kind: LineKind::Warn,
                 at: now(),
                 expires: None,
+                ..Default::default()
             },
         );
+    }
+
+    /// A message arrived (or I said one). Handles every kind in one place.
+    #[allow(clippy::too_many_arguments)]
+    pub fn receive(
+        &mut self,
+        vid: u64,
+        from: Who,
+        kind: u8,
+        id: [u8; 8],
+        text: String,
+        ttl: u64,
+        mine: bool,
+    ) {
+        match kind {
+            SAY_UNSAY => {
+                let before = self.view_mut(vid).map(|v| v.lines.len()).unwrap_or(0);
+                if let Some(v) = self.view_mut(vid) {
+                    v.lines
+                        .retain(|l| !(l.from == Some(from) && l.id == Some(id)));
+                }
+                let after = self.view_mut(vid).map(|v| v.lines.len()).unwrap_or(0);
+                if after < before && !mine {
+                    self.notice(vid, format!("{} took back their words.", from.name()));
+                }
+            }
+            SAY_TEXT | SAY_ONCE | SAY_ACTION => {
+                if text.is_empty() {
+                    return;
+                }
+                let line = Line {
+                    from: Some(from),
+                    text,
+                    kind: if mine { LineKind::Mine } else { LineKind::Msg },
+                    at: now(),
+                    expires: Some(now() + ttl),
+                    id: Some(id),
+                    action: kind == SAY_ACTION,
+                    once: kind == SAY_ONCE,
+                    seen: false,
+                };
+                self.push(vid, line);
+            }
+            _ => {}
+        }
+    }
+
+    /// The id of my most recent message in a view.
+    pub fn last_mine(&self, vid: u64) -> Option<[u8; 8]> {
+        self.views
+            .iter()
+            .find(|v| v.id == vid)?
+            .lines
+            .iter()
+            .rev()
+            .find(|l| l.kind == LineKind::Mine)
+            .and_then(|l| l.id)
+    }
+
+    pub fn history_step(&mut self, up: bool) {
+        if self.history.is_empty() {
+            return;
+        }
+        let n = self.history.len();
+        let pos = match (self.hist_pos, up) {
+            (None, true) => Some(n - 1),
+            (None, false) => None,
+            (Some(0), true) => Some(0),
+            (Some(i), true) => Some(i - 1),
+            (Some(i), false) if i + 1 < n => Some(i + 1),
+            (Some(_), false) => None,
+        };
+        self.hist_pos = pos;
+        self.input = pos.map(|i| self.history[i].clone()).unwrap_or_default();
+    }
+
+    /// Forget everything this screen remembers.
+    pub fn wipe(&mut self) {
+        self.views.truncate(1);
+        self.views[0].lines.clear();
+        self.masks.clear();
+        self.input.clear();
+        self.history.clear();
+        self.trusted.clear();
+        self.lock = None;
+        self.veiled = false;
+        self.active = 0;
+    }
+
+    /// Every key press lands here.
+    pub fn key(&mut self, k: KeyEvent) {
+        self.last_key = Instant::now();
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        if ctrl && k.code == KeyCode::Char('x') {
+            if self.panic_press() {
+                self.outbox.push(Action::Burn);
+            }
+            return;
+        }
+        if self.is_locked() {
+            match k.code {
+                KeyCode::Enter => self.lock_submit(),
+                KeyCode::Backspace => {
+                    self.lock_input.pop();
+                }
+                KeyCode::Esc => self.lock_input.clear(),
+                KeyCode::Char(c) if !ctrl => self.lock_input.push(c),
+                _ => {}
+            }
+            return;
+        }
+        if self.veiled {
+            // The key that lifts the veil is swallowed: nothing typed blind.
+            self.veiled = false;
+            return;
+        }
+        match self.mode {
+            Mode::Burning(_) => return,
+            Mode::Boot(_) => {
+                self.mode = Mode::Normal;
+                return;
+            }
+            Mode::Help => {
+                if matches!(k.code, KeyCode::Esc | KeyCode::F(1) | KeyCode::Char('q')) {
+                    self.mode = Mode::Normal;
+                }
+                return;
+            }
+            Mode::Normal => {}
+        }
+        match (k.code, ctrl) {
+            (KeyCode::Char('c'), true) | (KeyCode::Char('d'), true) => {
+                self.outbox.push(Action::Quit)
+            }
+            (KeyCode::Char('l'), true) => {}
+            (KeyCode::Char('v'), true) => self.veiled = true,
+            (KeyCode::Char('u'), true) => self.outbox.push(Action::NewUnion { passphrase: None }),
+            (KeyCode::Char('m'), true) => self.outbox.push(Action::NewMask),
+            (KeyCode::Char('n'), true) => self.cycle(1),
+            (KeyCode::Char('p'), true) => self.cycle(-1),
+            (KeyCode::F(1), _) => self.mode = Mode::Help,
+            (KeyCode::Tab, _) => self.cycle(1),
+            (KeyCode::BackTab, _) => self.cycle(-1),
+            (KeyCode::PageUp, _) => self.scroll += 5,
+            (KeyCode::PageDown, _) => self.scroll = self.scroll.saturating_sub(5),
+            (KeyCode::Up, _) => self.history_step(true),
+            (KeyCode::Down, _) => self.history_step(false),
+            (KeyCode::Enter, _) => self.submit(),
+            (KeyCode::Backspace, _) => {
+                self.input.pop();
+            }
+            (KeyCode::Esc, _) => self.input.clear(),
+            (KeyCode::Char(c), false) => self.input.push(c),
+            _ => {}
+        }
+    }
+
+    pub fn is_locked(&self) -> bool {
+        self.lock.as_ref().is_some_and(|l| l.engaged)
+    }
+
+    /// Enter on the lock screen.
+    pub fn lock_submit(&mut self) {
+        let attempt = std::mem::take(&mut *self.lock_input);
+        let Some(l) = self.lock.as_mut() else { return };
+        if l.check(&attempt) {
+            l.engaged = false;
+            l.fails = 0;
+            self.veiled = false;
+        } else {
+            l.fails += 1;
+            if l.fails >= LOCK_TRIES {
+                self.outbox.push(Action::Burn);
+            }
+        }
+    }
+
+    /// Called about once a second: veil on idle, dead-man switch.
+    pub fn idle_check(&mut self) {
+        let idle = self.last_key.elapsed().as_secs();
+        if let Some(v) = self.veil_idle {
+            if idle >= v {
+                self.veiled = true;
+            }
+        }
+        if let Some(d) = self.deadman {
+            if idle >= d {
+                self.deadman = None;
+                self.outbox.push(Action::Burn);
+            }
+        }
     }
 
     pub fn here_notice(&mut self, text: impl Into<String>) {
@@ -283,6 +576,17 @@ impl App {
     /// Drop expired lines everywhere (disappearing messages).
     pub fn expire(&mut self) {
         let t = now();
+        if !self.veiled && !self.lock.as_ref().is_some_and(|l| l.engaged) {
+            let active = self.active;
+            for l in self.views[active]
+                .lines
+                .iter_mut()
+                .filter(|l| l.once && !l.seen)
+            {
+                l.seen = true;
+                l.expires = Some(l.expires.unwrap_or(u64::MAX).min(t + ONCE_SECS));
+            }
+        }
         for v in &mut self.views {
             v.lines.retain(|l| l.expires.map(|e| e > t).unwrap_or(true));
         }
@@ -307,8 +611,16 @@ impl App {
     pub fn submit(&mut self) {
         let line = std::mem::take(&mut self.input);
         let line = line.trim();
+        self.hist_pos = None;
         if line.is_empty() {
             return;
+        }
+        // Never remember a lock passphrase, even in RAM.
+        if !line.starts_with("/lock") && self.history.last().map(|h| h != line).unwrap_or(true) {
+            self.history.push(line.to_string());
+            if self.history.len() > 100 {
+                self.history.remove(0);
+            }
         }
         if let Some(cmd) = line.strip_prefix('/') {
             self.command(cmd);
@@ -319,7 +631,8 @@ impl App {
                     "I speak in a union or a dm. /union, /join, /dm — /help for more.",
                 );
             } else {
-                self.outbox.push(Action::Say(v.id, line.to_string()));
+                self.outbox
+                    .push(Action::Say(v.id, SAY_TEXT, line.to_string()));
             }
         }
     }
@@ -418,6 +731,66 @@ impl App {
                 _ => self.outbox.push(Action::Cover(!self.cover)),
             },
             "export" => self.outbox.push(Action::Export(arg_opt)),
+            "me" | "once" if !arg.is_empty() && kind != ViewKind::Home => {
+                let k = if name == "me" { SAY_ACTION } else { SAY_ONCE };
+                self.outbox.push(Action::Say(vid, k, arg.to_string()))
+            }
+            "unsay" if kind != ViewKind::Home => self.outbox.push(Action::Unsay(vid)),
+            "trust" => self.outbox.push(Action::Trust(vid, arg_opt)),
+            "who" => {
+                if need(self, ViewKind::Union) {
+                    self.outbox.push(Action::Who(vid))
+                }
+            }
+            "invite" => {
+                if need(self, ViewKind::Union) {
+                    self.outbox.push(Action::Invite(vid))
+                }
+            }
+            "veil" => match arg {
+                "" => {
+                    self.veiled = !self.veiled;
+                }
+                "off" => {
+                    self.veil_idle = None;
+                    self.here_notice("no automatic veil.");
+                }
+                d => match parse_duration(d) {
+                    Some(s) => {
+                        self.veil_idle = Some(s);
+                        self.here_notice(format!("the veil falls after {} idle.", fmt_duration(s)));
+                    }
+                    None => self.here_notice("/veil, /veil 2m, /veil off"),
+                },
+            },
+            "lock" => {
+                if !arg.is_empty() {
+                    self.here_notice("stretching the lock passphrase…");
+                    self.lock = Lock::new(arg);
+                } else if let Some(l) = self.lock.as_mut() {
+                    l.engaged = true;
+                    l.fails = 0;
+                } else {
+                    self.here_notice("/lock <passphrase> — the first time needs one.");
+                }
+                self.lock_input.clear();
+            }
+            "deadman" => match arg {
+                "off" => {
+                    self.deadman = None;
+                    self.here_notice("dead-man switch off.");
+                }
+                d => match parse_duration(d) {
+                    Some(s) if s >= 60 => {
+                        self.deadman = Some(s);
+                        self.here_notice(format!(
+                            "if I touch nothing for {}, everything burns.",
+                            fmt_duration(s)
+                        ));
+                    }
+                    _ => self.here_notice("/deadman <1m..7d> or /deadman off"),
+                },
+            },
             "keep" => {
                 if need(self, ViewKind::Union) {
                     self.outbox.push(Action::Keep(vid))
@@ -452,6 +825,92 @@ mod tests {
         assert!(!a.panic_press());
         assert!(!a.panic_press());
         assert!(a.panic_press());
+    }
+
+    fn press(a: &mut App, code: KeyCode) {
+        a.key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn veil_swallows_the_unveiling_key() {
+        let mut a = App::new(false);
+        a.mode = Mode::Normal;
+        a.veiled = true;
+        press(&mut a, KeyCode::Char('x'));
+        assert!(!a.veiled);
+        assert!(a.input.is_empty(), "nothing typed blind");
+        a.key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL));
+        assert!(a.veiled);
+    }
+
+    #[test]
+    fn lock_opens_with_passphrase_and_burns_after_five() {
+        let mut a = App::new(false);
+        a.mode = Mode::Normal;
+        a.input = "/lock hunter2".into();
+        a.submit();
+        assert!(a.is_locked());
+        assert!(a.history.is_empty(), "lock passphrase never kept");
+        for c in "hunter2".chars() {
+            press(&mut a, KeyCode::Char(c));
+        }
+        press(&mut a, KeyCode::Enter);
+        assert!(!a.is_locked());
+        a.input = "/lock".into();
+        a.submit();
+        assert!(a.is_locked());
+        for _ in 0..5 {
+            press(&mut a, KeyCode::Char('n'));
+            press(&mut a, KeyCode::Enter);
+        }
+        assert!(matches!(a.outbox.last(), Some(Action::Burn)));
+    }
+
+    #[test]
+    fn history_and_unsay_and_once() {
+        let mut a = App::new(false);
+        a.mode = Mode::Normal;
+        let v = View::new(9, ViewKind::Dm, "x".into(), 0);
+        a.add_view(v);
+        a.focus(9);
+        for t in ["one", "two"] {
+            a.input = t.into();
+            a.submit();
+        }
+        press(&mut a, KeyCode::Up);
+        assert_eq!(a.input, "two");
+        press(&mut a, KeyCode::Up);
+        assert_eq!(a.input, "one");
+        press(&mut a, KeyCode::Down);
+        assert_eq!(a.input, "two");
+        let w = eigen_core::identity::Mask::generate().who();
+        a.receive(9, w, SAY_TEXT, [1; 8], "keep".into(), 60, false);
+        a.receive(9, w, SAY_ONCE, [2; 8], "fleeting".into(), 3600, false);
+        a.receive(9, w, SAY_UNSAY, [1; 8], String::new(), 60, false);
+        let v = a.views.iter().find(|v| v.id == 9).unwrap();
+        assert!(!v.lines.iter().any(|l| l.text == "keep"), "taken back");
+        a.expire();
+        let once = a
+            .views
+            .iter()
+            .find(|v| v.id == 9)
+            .unwrap()
+            .lines
+            .iter()
+            .find(|l| l.once)
+            .unwrap();
+        assert!(
+            once.expires.unwrap() <= now() + ONCE_SECS,
+            "once-line burns soon after being seen"
+        );
+    }
+
+    #[test]
+    fn deadman_burns_when_idle() {
+        let mut a = App::new(false);
+        a.deadman = Some(0);
+        a.idle_check();
+        assert!(matches!(a.outbox.last(), Some(Action::Burn)));
     }
 
     #[test]

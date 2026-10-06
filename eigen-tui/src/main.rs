@@ -232,7 +232,7 @@ async fn run(opts: Opts, hard: harden::Hardening) -> std::io::Result<bool> {
         let burning = matches!(app.mode, Mode::Burning(_));
         tokio::select! {
             Some(ev) = krx.recv() => match ev {
-                Ev::Key(k) => key(&mut app, k),
+                Ev::Key(k) => app.key(k),
                 Ev::Resize => term.clear()?,
             },
             Some(ne) = nrx.recv(), if !burning => engine.on_net(ne, &mut app),
@@ -243,6 +243,7 @@ async fn run(opts: Opts, hard: harden::Hardening) -> std::io::Result<bool> {
         if t != last_tick && !burning {
             last_tick = t;
             engine.tick(&mut app);
+            app.idle_check();
             app.expire();
         }
         for a in std::mem::take(&mut app.outbox) {
@@ -250,10 +251,7 @@ async fn run(opts: Opts, hard: harden::Hardening) -> std::io::Result<bool> {
                 Action::Burn => {
                     // Wipe first, animate after: the burn is already done when the screen decays.
                     engine.burn();
-                    app.views.truncate(1);
-                    app.views[0].lines.clear();
-                    app.masks.clear();
-                    app.input.clear();
+                    app.wipe();
                     app.mode = Mode::Burning(0);
                 }
                 Action::Quit => return Ok(false),
@@ -333,48 +331,4 @@ fn open_or_create(
     }
     .map_err(|_| "could not write the vault.".to_string())?;
     Ok((v, real))
-}
-
-fn key(app: &mut App, k: KeyEvent) {
-    let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-    if ctrl && k.code == KeyCode::Char('x') {
-        if app.panic_press() {
-            app.outbox.push(Action::Burn);
-        }
-        return;
-    }
-    match app.mode {
-        Mode::Burning(_) => return,
-        Mode::Boot(_) => {
-            app.mode = Mode::Normal;
-            return;
-        }
-        Mode::Help => {
-            if matches!(k.code, KeyCode::Esc | KeyCode::F(1) | KeyCode::Char('q')) {
-                app.mode = Mode::Normal;
-            }
-            return;
-        }
-        Mode::Normal => {}
-    }
-    match (k.code, ctrl) {
-        (KeyCode::Char('c'), true) | (KeyCode::Char('d'), true) => app.outbox.push(Action::Quit),
-        (KeyCode::Char('l'), true) => {}
-        (KeyCode::Char('u'), true) => app.outbox.push(Action::NewUnion { passphrase: None }),
-        (KeyCode::Char('m'), true) => app.outbox.push(Action::NewMask),
-        (KeyCode::Char('n'), true) => app.cycle(1),
-        (KeyCode::Char('p'), true) => app.cycle(-1),
-        (KeyCode::F(1), _) => app.mode = Mode::Help,
-        (KeyCode::Tab, _) => app.cycle(1),
-        (KeyCode::BackTab, _) => app.cycle(-1),
-        (KeyCode::PageUp, _) => app.scroll += 5,
-        (KeyCode::PageDown, _) => app.scroll = app.scroll.saturating_sub(5),
-        (KeyCode::Enter, _) => app.submit(),
-        (KeyCode::Backspace, _) => {
-            app.input.pop();
-        }
-        (KeyCode::Esc, _) => app.input.clear(),
-        (KeyCode::Char(c), false) => app.input.push(c),
-        _ => {}
-    }
 }

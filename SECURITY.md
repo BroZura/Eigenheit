@@ -17,8 +17,9 @@ EIGENHEIT has **not** been reviewed by anyone independent. It implements publish
 
 - A **global passive adversary** correlating Tor traffic. Cover traffic raises the cost; it does not defeat this.
 - A **compromised endpoint** (malware, OS, terminal emulator, keyloggers).
-- **The other people.** They can screenshot, log, or run a modified client that ignores disappearing timers.
-- **Union participants** see what is said in the union and its traffic volume; a departed participant can see ciphertext volume on the union mailbox until it rotates (hourly) — and can compute future hourly mailboxes, since it knew the secret.
+- **The other people.** They can screenshot, log, or run a modified client that ignores disappearing timers, `/once` and `/unsay`.
+- **The veil and the lock** guard against a glance at my screen, not against someone with access to my running process or terminal scrollback.
+- **Union participants** see what is said in the union and its traffic volume. A departed participant keeps seeing ciphertext volume only until the remaining participants rekey (seconds after they notice the departure; up to 15 s more if the expected rekeyer is offline).
 - **Relays can drop, delay or withhold** traffic. Use several.
 - **Deniability of the vault is weak.** The file's existence is visible. An adversary aware of the two-slot design can demand a second passphrase. The wipe duress mode destroys the real slot but cannot unwrite SSD blocks, journals or snapshots.
 - **Swap**: secrets are locked in RAM only if `RLIMIT_MEMLOCK` allows locking everything; otherwise the status bar says `swap: exposed`. Use encrypted swap.

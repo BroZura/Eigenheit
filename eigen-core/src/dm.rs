@@ -84,15 +84,27 @@ pub fn open_opk(card: &Card, b: &[u8]) -> Result<(u32, [u8; 32])> {
 pub struct Incoming {
     pub kind: u8,
     pub ttl: u32,
+    /// Random per-message id, so a message can later be taken back (`/unsay`).
+    pub id: [u8; 8],
     pub text: String,
 }
 
-fn encode_payload(kind: u8, ttl: u32, reply: &[u8; 32], text: &str) -> Result<Zeroizing<Vec<u8>>> {
+fn encode_payload(
+    kind: u8,
+    ttl: u32,
+    reply: &[u8; 32],
+    id: &[u8; 8],
+    text: &str,
+) -> Result<Zeroizing<Vec<u8>>> {
     if text.len() > DM_TEXT_MAX {
         return Err(Error::TooLong);
     }
     let mut w = Writer::new();
-    w.u8(kind).u32(ttl).bytes(reply).var(text.as_bytes());
+    w.u8(kind)
+        .u32(ttl)
+        .bytes(reply)
+        .bytes(id)
+        .var(text.as_bytes());
     let mut v = Zeroizing::new(w.finish());
     v.resize(PAYLOAD, 0);
     Ok(v)
@@ -103,11 +115,13 @@ fn decode_payload(b: &[u8]) -> Result<(Incoming, [u8; 32])> {
     let kind = r.u8()?;
     let ttl = r.u32()?;
     let reply = r.arr()?;
+    let id = r.arr()?;
     let text = String::from_utf8(r.var()?.to_vec()).map_err(|_| Error::Malformed)?;
     Ok((
         Incoming {
             kind,
             ttl: ttl.clamp(10, 7 * 86400),
+            id,
             text,
         },
         reply,
@@ -190,7 +204,13 @@ impl Session {
     }
 
     /// Encrypt a message. Returns (target mailbox, ttl, blob).
-    pub fn seal(&mut self, me: &Mask, kind: u8, text: &str) -> Result<(Mbox, u32, Vec<u8>)> {
+    pub fn seal(
+        &mut self,
+        me: &Mask,
+        kind: u8,
+        id: [u8; 8],
+        text: &str,
+    ) -> Result<(Mbox, u32, Vec<u8>)> {
         let epoch = self.ratchet.epoch();
         if epoch != self.last_epoch || self.mine.is_empty() {
             // New sending chain → new receive mailbox for the replies.
@@ -205,7 +225,7 @@ impl Session {
             self.last_epoch = epoch;
         }
         let reply = self.mine.last().map(|m| m.secret).unwrap_or_default();
-        let payload = encode_payload(kind, self.ttl, &reply, text)?;
+        let payload = encode_payload(kind, self.ttl, &reply, &id, text)?;
         let rmsg = self.ratchet.encrypt(&payload)?;
         if let Some(ih) = &self.intro {
             let mut head = Writer::new();
@@ -332,7 +352,7 @@ mod tests {
         let (id, pk) = (bob.opks[0].0, PublicKey::from(&bob.opks[0].1).to_bytes());
         let opk = open_opk(&card, &opk_blob(&bob, id, &pk).unwrap()).unwrap();
         let mut sa = Session::start(&alice, &card, &bundle, Some(opk)).unwrap();
-        let (mbox, _, b1) = sa.seal(&alice, K_TEXT, "hello bob").unwrap();
+        let (mbox, _, b1) = sa.seal(&alice, K_TEXT, [1; 8], "hello bob").unwrap();
         assert_eq!(mbox, card.intro_mbox());
         assert_eq!(b1.len(), BLOB);
         let Intro::New(sb, inc) = open_intro(&mut bob, &b1, |_| false).unwrap() else {
@@ -347,20 +367,20 @@ mod tests {
     fn full_dm_flow_with_rotation() {
         let (alice, mut bob, mut sa, mut sb) = handshake();
         // Alice writes again before Bob answers: still via intro, same session.
-        let (_, _, b2) = sa.seal(&alice, K_TEXT, "still there?").unwrap();
+        let (_, _, b2) = sa.seal(&alice, K_TEXT, [1; 8], "still there?").unwrap();
         let Intro::Existing(ek, rmsg) = open_intro(&mut bob, &b2, |e| *e == sb.ek).unwrap() else {
             panic!()
         };
         assert_eq!(ek, sb.ek);
         assert_eq!(sb.open_existing_intro(&rmsg).unwrap().text, "still there?");
         // Bob answers to Alice's announced mailbox.
-        let (m, _, r1) = sb.seal(&bob, K_TEXT, "here").unwrap();
+        let (m, _, r1) = sb.seal(&bob, K_TEXT, [1; 8], "here").unwrap();
         assert!(sa.mailboxes().contains(&m));
         assert_eq!(sa.open(&m, &r1).unwrap().text, "here");
         assert!(!sa.is_initiating());
         let first_alice_mbox = sa.mailboxes()[0];
         // Alice's next message starts a new chain → a new mailbox.
-        let (m2, _, a3) = sa.seal(&alice, K_TEXT, "good").unwrap();
+        let (m2, _, a3) = sa.seal(&alice, K_TEXT, [1; 8], "good").unwrap();
         assert!(sb.mailboxes().contains(&m2));
         assert_eq!(sb.open(&m2, &a3).unwrap().text, "good");
         assert_eq!(sa.mailboxes().len(), 2, "old mailbox kept for grace");
@@ -372,7 +392,7 @@ mod tests {
     #[test]
     fn relay_sees_no_sender() {
         let (alice, _bob, mut sa, _sb) = handshake();
-        let (_, _, b) = sa.seal(&alice, K_TEXT, "x").unwrap();
+        let (_, _, b) = sa.seal(&alice, K_TEXT, [1; 8], "x").unwrap();
         let hay = b
             .windows(32)
             .any(|w| w == alice.who().0 || w == alice.ik_pub());
@@ -383,7 +403,8 @@ mod tests {
     fn too_long_refused() {
         let (alice, _b, mut sa, _sb) = handshake();
         assert_eq!(
-            sa.seal(&alice, K_TEXT, &"x".repeat(DM_TEXT_MAX + 1)).err(),
+            sa.seal(&alice, K_TEXT, [1; 8], &"x".repeat(DM_TEXT_MAX + 1))
+                .err(),
             Some(Error::TooLong)
         );
     }
@@ -391,7 +412,7 @@ mod tests {
     #[test]
     fn stranger_cannot_open_intro() {
         let (alice, _bob, mut sa, _) = handshake();
-        let (_, _, b) = sa.seal(&alice, K_TEXT, "x").unwrap();
+        let (_, _, b) = sa.seal(&alice, K_TEXT, [1; 8], "x").unwrap();
         let mut eve = Mask::generate();
         assert!(open_intro(&mut eve, &b, |_| false).is_err());
     }

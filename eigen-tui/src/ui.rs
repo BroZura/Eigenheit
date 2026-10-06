@@ -69,6 +69,9 @@ pub fn draw(f: &mut Frame, app: &App) {
         Mode::Burning(n) => return burn(f, area, n, &p),
         _ => {}
     }
+    if app.is_locked() {
+        return locked(f, area, app, &p);
+    }
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -137,6 +140,16 @@ fn status(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
             p.s(BASE),
         )]);
     }
+    if let Some(d) = app.deadman {
+        let left = d.saturating_sub(app.last_key.elapsed().as_secs());
+        parts.push(vec![Span::styled(
+            format!("deadman {}", fmt_duration(left)),
+            p.accent(),
+        )]);
+    }
+    if app.veiled {
+        parts.push(vec![Span::styled("veiled", p.accent())]);
+    }
     if !app.locked {
         parts.push(vec![Span::styled("swap: exposed", p.dim())]);
     }
@@ -189,7 +202,14 @@ fn strip(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
         lines.push(TLine::from(vec![
             Span::styled(mark, p.accent()),
             Span::styled(format!("{} ", m.who.glyph()), p.key(&m.who)),
-            Span::styled(trunc(&m.who.name(), w.saturating_sub(3)), p.s(BASE)),
+            Span::styled(
+                if app.veiled {
+                    VEIL.to_string()
+                } else {
+                    trunc(&m.who.name(), w.saturating_sub(3))
+                },
+                p.s(BASE),
+            ),
         ]));
     }
     for (kind, label) in [(ViewKind::Union, "unions"), (ViewKind::Dm, "dms")] {
@@ -219,7 +239,12 @@ fn strip(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
                     ts = p.accent();
                 }
             }
-            let title = trunc(&v.title, w.saturating_sub(3 + tail.len()));
+            let mut title = trunc(&v.title, w.saturating_sub(3 + tail.len()));
+            if app.veiled {
+                title = VEIL.to_string();
+            } else if v.kind == ViewKind::Dm && v.who.is_some_and(|w| app.trusted.contains(&w)) {
+                title = trunc(&format!("{} ✓", v.title), w.saturating_sub(3 + tail.len()));
+            }
             lines.push(TLine::from(vec![
                 Span::styled(mark, p.accent()),
                 Span::styled(format!("{glyph} "), gs),
@@ -295,7 +320,11 @@ fn stream(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
         title.push(Span::styled(format!("{} ", w.glyph()), p.key(&w)));
     }
     title.push(Span::styled(
-        format!("{} ", v.title),
+        if app.veiled {
+            format!("{VEIL} ")
+        } else {
+            format!("{} ", v.title)
+        },
         p.s(BASE).add_modifier(Modifier::BOLD),
     ));
     let block = Block::default()
@@ -319,10 +348,12 @@ fn stream(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
                 } else {
                     ("─ ", p.dim())
                 };
-                for (i, chunk) in wrap(&l.text, width.saturating_sub(2))
-                    .into_iter()
-                    .enumerate()
-                {
+                let text = if app.veiled {
+                    VEIL.to_string()
+                } else {
+                    l.text.clone()
+                };
+                for (i, chunk) in wrap(&text, width.saturating_sub(2)).into_iter().enumerate() {
                     out.push(TLine::from(vec![
                         Span::styled(if i == 0 { mark } else { "  " }, st),
                         Span::styled(chunk, st),
@@ -331,16 +362,35 @@ fn stream(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
             }
             LineKind::Msg | LineKind::Mine => {
                 let who = l.from.unwrap_or(Who([0; 32]));
-                let name = who.name();
+                let name = if app.veiled {
+                    VEIL.to_string()
+                } else if app.trusted.contains(&who) {
+                    format!("{} ✓", who.name())
+                } else {
+                    who.name()
+                };
                 let mut ns = p.key(&who);
                 if l.kind == LineKind::Mine {
                     ns = ns.add_modifier(Modifier::BOLD);
                 }
+                let mut bs = p.s(BASE);
+                if l.action {
+                    bs = bs.add_modifier(Modifier::ITALIC);
+                }
+                let body = if app.veiled {
+                    "░░░░░░░░░░░░".to_string()
+                } else if l.action {
+                    format!("⁎ {}", l.text)
+                } else if l.once {
+                    format!("◌ {}", l.text)
+                } else {
+                    l.text.clone()
+                };
                 let head = name.chars().count() + 5;
                 let body_w = width.saturating_sub(head);
                 let narrow = body_w < 24;
                 let chunks = wrap(
-                    &l.text,
+                    &body,
                     if narrow {
                         width.saturating_sub(2)
                     } else {
@@ -356,20 +406,20 @@ fn stream(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
                     for c in chunks {
                         out.push(TLine::from(vec![
                             Span::styled("  ", p.dim()),
-                            Span::styled(c, p.s(BASE)),
+                            Span::styled(c, bs),
                         ]));
                     }
                 } else {
                     for (i, c) in chunks.into_iter().enumerate() {
                         if i == 0 {
                             first.push(Span::styled(" │ ", p.dim()));
-                            first.push(Span::styled(c, p.s(BASE)));
+                            first.push(Span::styled(c, bs));
                             out.push(TLine::from(std::mem::take(&mut first)));
                         } else {
                             out.push(TLine::from(vec![
                                 Span::raw(" ".repeat(head - 3)),
                                 Span::styled(" │ ", p.dim()),
-                                Span::styled(c, p.s(BASE)),
+                                Span::styled(c, bs),
                             ]));
                         }
                     }
@@ -402,6 +452,7 @@ fn input(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
     let avail = (r.width as usize).saturating_sub(prompt.chars().count() + 1);
     let n = app.input.chars().count();
     let shown: String = app.input.chars().skip(n.saturating_sub(avail)).collect();
+    let shown = if app.veiled { String::new() } else { shown };
     let line = if app.input.is_empty() && v.kind == ViewKind::Home {
         TLine::from(vec![
             Span::styled(prompt, prompt_style),
@@ -463,6 +514,46 @@ fn help(f: &mut Frame, area: Rect, p: &Pal) {
         ))))
         .collect();
     f.render_widget(Paragraph::new(lines).block(block), r);
+}
+
+const VEIL: &str = "░░░░░░";
+
+fn locked(f: &mut Frame, area: Rect, app: &App, p: &Pal) {
+    let mut lines: Vec<TLine> = Vec::new();
+    let top = area.height.saturating_sub(SIGIL.len() as u16 + 6) / 2;
+    for _ in 0..top {
+        lines.push(TLine::from(""));
+    }
+    for s in SIGIL {
+        lines.push(TLine::from(Span::styled(*s, p.dim())).centered());
+    }
+    lines.push(TLine::from(""));
+    lines.push(
+        TLine::from(Span::styled(
+            "locked.",
+            p.s(BASE).add_modifier(Modifier::BOLD),
+        ))
+        .centered(),
+    );
+    let fails = app.lock.as_ref().map(|l| l.fails).unwrap_or(0);
+    let note = if fails == 0 {
+        "my passphrase, then Enter. wrong too often and everything burns.".to_string()
+    } else {
+        format!(
+            "does not open. {} tries before everything burns.",
+            5u8.saturating_sub(fails)
+        )
+    };
+    lines.push(
+        TLine::from(Span::styled(
+            note,
+            if fails > 0 { p.accent() } else { p.dim() },
+        ))
+        .centered(),
+    );
+    // No echo, not even the length.
+    lines.push(TLine::from(Span::styled("›", p.accent())).centered());
+    f.render_widget(Paragraph::new(lines), area);
 }
 
 fn boot(f: &mut Frame, area: Rect, p: &Pal) {
@@ -595,6 +686,7 @@ mod snapshot {
                     kind: LineKind::Msg,
                     at: 0,
                     expires: None,
+                    ..Default::default()
                 },
             );
         }

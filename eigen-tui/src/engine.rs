@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use crate::app::SAY_UNSAY;
 use eigen_core::cell::{Item, Mbox};
 use eigen_core::crypto::{h, random, random_u64};
 use eigen_core::dm::{self, Intro, Session, K_HELLO, K_TEXT};
@@ -12,7 +13,7 @@ use eigen_core::x3dh::Bundle;
 use eigen_core::{now, pgp};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::app::{Action, App, Line, LineKind, MaskInfo, TorState, View, ViewKind};
+use crate::app::{Action, App, MaskInfo, TorState, View, ViewKind};
 use crate::net::{Link, LinkCfg};
 use crate::tor::RelayAddr;
 
@@ -139,24 +140,17 @@ pub struct Engine {
     pub dms: HashMap<u64, DmState>,
     pub unions: HashMap<u64, crate::unions::UnionState>,
     pins: HashMap<String, Who>,
+    pub trusted: std::collections::HashSet<Who>,
     seen: HashMap<[u8; 32], u64>,
     cursors: HashMap<(usize, Mbox), u64>,
     polls: HashMap<Mbox, Poll>,
     inflight: HashMap<(usize, Mbox), u64>,
     pub poll_secs: u64,
+    /// Clock skew tolerated on union JOIN timestamps.
+    pub join_skew: u64,
     pub vault: Option<eigen_core::vault::Vault>,
     pub kept: std::collections::HashSet<[u8; 32]>,
     pub dirty: bool,
-}
-
-fn line(from: Who, text: String, kind: LineKind, ttl: u64) -> Line {
-    Line {
-        from: Some(from),
-        text,
-        kind,
-        at: now(),
-        expires: Some(now() + ttl),
-    }
 }
 
 impl Engine {
@@ -168,11 +162,13 @@ impl Engine {
             dms: HashMap::new(),
             unions: HashMap::new(),
             pins: HashMap::new(),
+            trusted: std::collections::HashSet::new(),
             seen: HashMap::new(),
             cursors: HashMap::new(),
             polls: HashMap::new(),
             inflight: HashMap::new(),
             poll_secs: POLL_SECS,
+            join_skew: 60,
             vault: None,
             kept: std::collections::HashSet::new(),
             dirty: false,
@@ -486,10 +482,10 @@ impl Engine {
     }
 
     fn show(&mut self, vid: u64, peer: Who, inc: dm::Incoming, app: &mut App) {
-        if inc.kind == K_TEXT && !inc.text.is_empty() {
-            app.push(vid, line(peer, inc.text, LineKind::Msg, inc.ttl as u64));
-        } else if inc.kind == K_HELLO {
+        if inc.kind == K_HELLO {
             app.notice(vid, format!("{} opened a dm.", peer.name()));
+        } else {
+            app.receive(vid, peer, inc.kind, inc.id, inc.text, inc.ttl as u64, false);
         }
     }
 
@@ -558,9 +554,9 @@ impl Engine {
                     },
                 );
                 let pending = std::mem::take(&mut d.pending);
-                self.send_dm(vid, K_HELLO, String::new(), app);
+                self.send_dm(vid, K_HELLO, random(), String::new(), app);
                 for p in pending {
-                    self.send_dm(vid, K_TEXT, p, app);
+                    self.send_dm(vid, K_TEXT, random(), p, app);
                 }
             }
             Err(_) => app.warn(
@@ -570,7 +566,7 @@ impl Engine {
         }
     }
 
-    fn send_dm(&mut self, vid: u64, kind: u8, text: String, app: &mut App) {
+    fn send_dm(&mut self, vid: u64, kind: u8, id: [u8; 8], text: String, app: &mut App) {
         let Some(d) = self.dms.get_mut(&vid) else {
             return;
         };
@@ -579,12 +575,12 @@ impl Engine {
             app.notice(vid, "queued until their keys arrive.");
             return;
         };
-        match s.seal(&self.masks[d.mask].mask, kind, &text) {
+        match s.seal(&self.masks[d.mask].mask, kind, id, &text) {
             Ok((mbox, ttl, blob)) => {
                 let me = self.masks[d.mask].mask.who();
                 let ctx = d.ctx;
-                if kind == K_TEXT {
-                    app.push(vid, line(me, text, LineKind::Mine, ttl as u64));
+                if kind != K_HELLO {
+                    app.receive(vid, me, kind, id, text, ttl as u64, true);
                 }
                 self.put(ctx, vid, mbox, ttl, blob, DM_POW);
             }
@@ -610,13 +606,14 @@ impl Engine {
                 ));
             }
             Action::Dm(arg) => self.open_dm(&arg, app),
-            Action::Say(vid, text) => {
-                match app.views.iter().find(|v| v.id == vid).map(|v| v.kind) {
-                    Some(ViewKind::Dm) => self.send_dm(vid, K_TEXT, text, app),
-                    Some(ViewKind::Union) => crate::unions::say(self, vid, text, app),
-                    _ => {}
-                }
-            }
+            Action::Say(vid, kind, text) => self.say(vid, kind, random(), text, app),
+            Action::Unsay(vid) => match app.last_mine(vid) {
+                Some(id) => self.say(vid, SAY_UNSAY, id, String::new(), app),
+                None => app.notice(vid, "nothing of mine here to take back."),
+            },
+            Action::Trust(vid, name) => self.trust(vid, name, app),
+            Action::Who(vid) => crate::unions::who(self, vid, app),
+            Action::Invite(vid) => crate::unions::invite(self, vid, app),
             Action::Leave(vid) => {
                 if let Some(d) = self.dms.remove(&vid) {
                     self.net.drop_ctx(d.ctx);
@@ -736,6 +733,45 @@ impl Engine {
         self.fetch_bundle(vid);
     }
 
+    fn say(&mut self, vid: u64, kind: u8, id: [u8; 8], text: String, app: &mut App) {
+        match app.views.iter().find(|v| v.id == vid).map(|v| v.kind) {
+            Some(ViewKind::Dm) => self.send_dm(vid, kind, id, text, app),
+            Some(ViewKind::Union) => crate::unions::say(self, vid, kind, id, text, app),
+            _ => {}
+        }
+    }
+
+    fn target(&self, vid: u64, name: Option<&str>) -> Option<Who> {
+        match (name, self.dms.get(&vid)) {
+            (None, Some(d)) => Some(d.peer),
+            (Some(n), _) => self
+                .pins
+                .get(n)
+                .copied()
+                .or_else(|| crate::unions::member_named(self, vid, n)),
+            (None, None) => None,
+        }
+    }
+
+    /// `/trust`: I compared the SAS out of band and mark this key ✓ (toggle).
+    fn trust(&mut self, vid: u64, name: Option<String>, app: &mut App) {
+        let Some(t) = self.target(vid, name.as_deref()) else {
+            return app.notice(
+                vid,
+                "trust whom? /trust <name> (compare the SAS from /verify first)",
+            );
+        };
+        if self.trusted.remove(&t) {
+            app.trusted.remove(&t);
+            app.notice(vid, format!("{} is no longer marked verified.", t.name()));
+        } else {
+            self.trusted.insert(t);
+            app.trusted.insert(t);
+            app.notice(vid, format!("✓ {} — I compared the SAS myself. if this key ever changes, I will hear about it.", t.name()));
+        }
+        self.dirty = true;
+    }
+
     fn verify(&mut self, vid: u64, name: Option<String>, app: &mut App) {
         let view = app.views.iter().find(|v| v.id == vid);
         let mi = view.map(|v| v.mask).unwrap_or(app.active_mask);
@@ -836,6 +872,7 @@ impl Engine {
                 })
                 .collect(),
             pins: self.pins.values().map(|w| w.0).collect(),
+            trusted: self.trusted.iter().map(|w| w.0).collect(),
             active_mask: app.active_mask as u16,
             wipe_other: false,
         };
@@ -848,6 +885,10 @@ impl Engine {
             if let Ok(mask) = Mask::from_bytes(m) {
                 self.add_mask(mask, app);
             }
+        }
+        for t in &data.trusted {
+            self.trusted.insert(Who(*t));
+            app.trusted.insert(Who(*t));
         }
         for p in data.pins {
             let w = Who(p);
@@ -871,6 +912,7 @@ impl Engine {
             eigen_core::vault::Vault::burn(&v.path);
         }
         self.kept.clear();
+        self.trusted.clear();
         self.dms.clear();
         self.unions.clear();
         self.masks.clear();
@@ -920,6 +962,7 @@ pub mod harness {
             });
             let mut e = Engine::new(net, tx);
             e.poll_secs = 0;
+            e.join_skew = 2;
             let mut app = App::new(false);
             app.mode = crate::app::Mode::Normal;
             e.add_mask(Mask::generate(), &mut app);

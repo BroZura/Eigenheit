@@ -25,6 +25,8 @@ pub struct VaultData {
     /// (union secret, pow, mask index)
     pub unions: Vec<(Zeroizing<[u8; 32]>, u8, u16)>,
     pub pins: Vec<[u8; 32]>,
+    /// Keys I verified out of band (`/trust`).
+    pub trusted: Vec<[u8; 32]>,
     pub active_mask: u16,
     pub wipe_other: bool,
 }
@@ -44,6 +46,10 @@ impl VaultData {
         w.u16(self.pins.len() as u16);
         for p in &self.pins {
             w.bytes(p);
+        }
+        w.u16(self.trusted.len() as u16);
+        for t in &self.trusted {
+            w.bytes(t);
         }
         Zeroizing::new(w.finish())
     }
@@ -65,6 +71,11 @@ impl VaultData {
         }
         for _ in 0..r.u16()? {
             d.pins.push(r.arr()?);
+        }
+        if r.remaining() >= 2 {
+            for _ in 0..r.u16()? {
+                d.trusted.push(r.arr()?);
+            }
         }
         Ok(d)
     }

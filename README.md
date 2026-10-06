@@ -73,17 +73,23 @@ Clear-net is refused without that flag: my network would see which mailboxes I t
 | `/renew` | I stay for the next term |
 | `/drop <name>` | vote to rotate keys away from someone (majority of the others) |
 | `/mute <name>` | hide someone on my screen |
+| `/me <action>`, `/once <words>`, `/unsay` | an action; words that vanish 30 s after being read; take back my last words |
+| `/who`, `/invite` | who is in this union (as far as I can see); its current invite |
+| `/trust [name]` | mark a key ✓ after comparing the SAS |
+| `/veil [2m\|off]` | hide names and words now (Ctrl-V) or after idle (default 5 min) |
+| `/lock <passphrase>` | lock the screen; 5 wrong tries burn everything |
+| `/deadman <30m\|off>` | burn everything if I am idle that long |
 | `/cover on\|off` | cover traffic |
 | `/keep` | remember this union in my vault |
 | `/export [path]`, `/import <path\|card>` | PGP public key out; pin a PGP key or card |
 | `/burn` | destroy everything, exit |
 
-Keys: `Tab`/`Shift-Tab` (or `Ctrl-N`/`Ctrl-P`) switch, `PgUp`/`PgDn` scroll, `Ctrl-U` new union, `Ctrl-M` new mask (only where the terminal distinguishes it from Enter), `Ctrl-L` redraw, `F1` help, `Ctrl-X ×3` panic burn, `Ctrl-C` quit. Works at 80×24, honours `NO_COLOR`.
+Keys: `Tab`/`Shift-Tab` (or `Ctrl-N`/`Ctrl-P`) switch, `PgUp`/`PgDn` scroll, `Ctrl-U` new union, `Ctrl-M` new mask (only where the terminal distinguishes it from Enter), `Ctrl-L` redraw, `Ctrl-V` veil, `Up`/`Down` my earlier lines (RAM only), `F1` help, `Ctrl-X ×3` panic burn, `Ctrl-C` quit. Works at 80×24, honours `NO_COLOR`.
 
 ## How it works (short)
 
 - **DMs:** X3DH with signed prekeys and one-time prekeys held (encrypted) at relays → Double Ratchet. Sealed sender: the first message encrypts my identity to the recipient's prekey. Receive mailboxes rotate with each ratchet step.
-- **Unions:** the secret derives hourly mailbox ids and a control key; content uses per-participant sender-key chains, signed by each mask, rotated whenever anyone leaves or is dropped.
+- **Unions:** the secret derives hourly mailbox ids and a control key; content uses per-participant sender-key chains, signed by each mask. Whenever anyone leaves or is dropped, sender keys rotate *and* the union takes a new secret, so those gone cannot even watch the mailboxes.
 - **Wire:** every frame is exactly 1024 bytes; every stored blob exactly 960 bytes; one response per request. Hashcash PoW on every write.
 - Details: [docs/PROTOCOL.md](docs/PROTOCOL.md), choices and their costs: [docs/DECISIONS.md](docs/DECISIONS.md), builds: [docs/BUILD.md](docs/BUILD.md).
 
