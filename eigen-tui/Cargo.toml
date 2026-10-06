@@ -1,0 +1,21 @@
+[package]
+name = "eigen-tui"
+description = "EIGENHEIT terminal client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "eigen"
+path = "src/main.rs"
+
+[dependencies]
+eigen-core = { path = "../eigen-core" }
+tokio.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+zeroize.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+eigen-relay = { path = "../eigen-relay" }

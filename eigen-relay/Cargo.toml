@@ -1,0 +1,10 @@
+[package]
+name = "eigen-relay"
+description = "EIGENHEIT relay: RAM-only, logless mailbox store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+eigen-core = { path = "../eigen-core" }
+tokio.workspace = true
