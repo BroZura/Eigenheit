@@ -1,6 +1,7 @@
-//! Unions: groups defined by a secret, not a name. Control messages are sealed under
-//! a secret-derived key; content uses per-participant sender-key chains, signed by
-//! each participant's mask key so nobody can speak for anyone else.
+//! Unions: groups defined by a shared secret. Control messages are sealed under a key
+//! derived from the secret. Content uses a sender-key chain per member. Each
+//! message is signed with the sender's mask key, so no member can send messages
+//! in another member's name.
 use std::collections::HashMap;
 
 use x25519_dalek::{PublicKey, StaticSecret};
@@ -43,7 +44,8 @@ impl UnionKeys {
     pub fn generate(pow: u8) -> UnionKeys {
         Self::from_secret(random(), pow)
     }
-    /// Passphrase form. Argon2id, 64 MiB, t=3 — slow on purpose.
+    /// Derive the union keys from a passphrase with Argon2id (64 MiB, t=3). The
+    /// derivation is slow by design.
     pub fn from_passphrase(pass: &str) -> Result<UnionKeys> {
         let params = argon2::Params::new(64 * 1024, 3, 1, Some(32)).map_err(|_| Error::Unknown)?;
         let a = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
@@ -78,11 +80,13 @@ impl UnionKeys {
         raw.zeroize();
         Ok(Self::from_secret(sec, pow))
     }
-    /// The union's face: a derived name, like a mask's. Reveals nothing about the secret.
+    /// Public identity of the union, derived from the union id. It reveals nothing about
+    /// the secret.
     pub fn face(&self) -> Who {
         Who(self.uid)
     }
-    /// Mailbox for a given hour. Unlinkable across hours without the secret.
+    /// Mailbox for a given hour. Without the secret, mailboxes of different hours cannot
+    /// be linked.
     pub fn mbox(&self, hour: u64) -> Mbox {
         mac(&self.secret[..], &[b"eigen/umbox", &hour.to_be_bytes()])
     }
@@ -109,7 +113,7 @@ impl UnionKeys {
 pub enum Body {
     Join {
         mx: [u8; 32],
-        /// When I announced myself; old JOINs replayed from the relay are ignored.
+        /// Time of the announcement. Old JOINs replayed by the relay are ignored.
         at: u64,
     },
     Hello {
@@ -136,7 +140,7 @@ pub enum Body {
         target: Who,
         term: u32,
     },
-    /// A fresh union secret for the remaining participants (after a roster shrink).
+    /// A fresh union secret for the remaining members (after a roster shrink).
     Rekey {
         epoch: u32,
         eph: [u8; 32],
@@ -281,7 +285,7 @@ fn entry_key(dh: &[u8; 32], uid: &[u8; 32]) -> Zeroizing<[u8; 32]> {
     kdf32(&[0u8; 32], dh, &[&b"eigen/skey"[..], uid].concat())
 }
 
-/// My sending chain in a union.
+/// The local sending chain in a union.
 pub struct SenderChain {
     pub gen: u32,
     ck: [u8; 32],
@@ -311,7 +315,7 @@ impl SenderChain {
         }
     }
 
-    /// SKEY body distributing my *current* chain position to `to` (who, member key).
+    /// SKEY bodies that distribute the *current* chain position to `to` (who, member key).
     pub fn distribute(&self, uid: &[u8; 32], to: &[(Who, [u8; 32])]) -> Vec<Body> {
         to.chunks(SKEY_PER_MSG)
             .map(|chunk| {
@@ -372,7 +376,7 @@ impl SenderChain {
     }
 }
 
-/// A chain I received from someone else.
+/// A sending chain received from another member.
 pub struct RecvChain {
     pub gen: u32,
     /// The union id this chain was received under (it changes on rekey).
@@ -472,7 +476,7 @@ fn rekey_key(dh: &[u8; 32], uid: &[u8; 32]) -> Zeroizing<[u8; 32]> {
     kdf32(&[0u8; 32], dh, &[&b"eigen/rekey"[..], uid].concat())
 }
 
-/// Hand a fresh union secret to the remaining participants only.
+/// Hand a fresh union secret to the remaining members only.
 pub fn rekey_bodies(
     uid: &[u8; 32],
     epoch: u32,

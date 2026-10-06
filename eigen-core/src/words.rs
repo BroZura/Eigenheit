@@ -14,7 +14,7 @@ pub fn noun(i: u8) -> &'static str {
         .unwrap_or("mask")
 }
 
-/// Geometric glyphs only — no emoji. Each renders one cell wide in common fonts.
+/// Geometric glyphs. The list contains no emoji. Each glyph is one cell wide in common fonts.
 pub const GLYPHS: &[char] = &[
     '◆', '◇', '○', '●', '◐', '◑', '◒', '◓', '■', '□', '▲', '△', '▼', '▽', '◈', '◉', '◊', '✦', '✧',
     '✶', '✷', '✸', '⊕', '⊗', '⊘', '⊙', '⊚', '⊛', '⌬', '⍟', '⎔', '⏣', '▣', '▤', '▥', '▦', '▧', '▨',

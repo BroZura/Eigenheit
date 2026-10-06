@@ -1,7 +1,7 @@
-//! I2P via the SAM v3 bridge of a local router (i2pd or Java I2P, default
-//! 127.0.0.1:7656). Every session gets a TRANSIENT destination: nothing is
-//! persisted, and each mask/dm/union runs its own session — its own tunnels —
-//! so I2P cannot link them either.
+//! I2P through the SAM v3 bridge of a local router (i2pd or Java I2P, default
+//! 127.0.0.1:7656). Every session uses a TRANSIENT destination, so nothing is
+//! stored. Each mask, direct message and union uses its own session with its own
+//! tunnels, so they cannot be linked through I2P.
 use std::io;
 
 use sha2::{Digest, Sha256};
@@ -22,7 +22,7 @@ fn ok(line: &str) -> io::Result<()> {
         Ok(())
     } else {
         Err(io::Error::other(format!(
-            "i2p router refused: {}",
+            "I2P router refused the request: {}",
             field(line, "RESULT").unwrap_or("?")
         )))
     }
@@ -42,11 +42,11 @@ async fn hello(sam: &str) -> io::Result<TcpStream> {
 }
 
 /// A streaming session with a transient destination. Dropping it closes the
-/// control socket, and the router forgets the destination.
+/// control socket, and the router removes the destination.
 pub struct Session {
     _control: TcpStream,
     pub id: String,
-    /// My public destination (I2P base64).
+    /// Public destination of this session (I2P base64).
     pub dest: String,
     sam: String,
 }
@@ -58,7 +58,7 @@ impl Session {
             "eigen{}",
             eigen_core::wire::hex(&eigen_core::crypto::random::<6>())
         );
-        // Ed25519 destination, ECIES-X25519 lease sets, short tunnels per side.
+        // Ed25519 destination, ECIES-X25519 lease sets, two inbound and two outbound tunnels.
         let r = cmd(
             &mut s,
             &format!("SESSION CREATE STYLE=STREAM ID={id} DESTINATION=TRANSIENT SIGNATURE_TYPE=7 i2cp.leaseSetEncType=4 inbound.quantity=2 outbound.quantity=2"),
@@ -68,7 +68,7 @@ impl Session {
         let r = cmd(&mut s, "NAMING LOOKUP NAME=ME").await?;
         ok(&r)?;
         let dest = field(&r, "VALUE")
-            .ok_or_else(|| io::Error::other("no destination"))?
+            .ok_or_else(|| io::Error::other("SAM bridge returned no destination"))?
             .to_string();
         Ok(Session {
             _control: s,
@@ -78,7 +78,7 @@ impl Session {
         })
     }
 
-    /// My address, as clients write it.
+    /// The `.b32.i2p` address of this session, in the form that clients use.
     pub fn b32(&self) -> io::Result<String> {
         b32(&self.dest)
     }
@@ -89,7 +89,7 @@ impl Session {
             let r = cmd(&mut s, &format!("NAMING LOOKUP NAME={target}")).await?;
             ok(&r)?;
             field(&r, "VALUE")
-                .ok_or_else(|| io::Error::other("unknown i2p name"))?
+                .ok_or_else(|| io::Error::other("Unknown I2P name"))?
                 .to_string()
         } else {
             target.to_string()
@@ -106,8 +106,8 @@ impl Session {
         Ok(s)
     }
 
-    /// Wait for one incoming stream. The peer's destination line is read and
-    /// dropped on the floor: the relay never learns or keeps who connected.
+    /// Waits for one incoming stream. The line with the peer's destination is
+    /// read and discarded. The relay does not store it.
     pub async fn accept(&self) -> io::Result<TcpStream> {
         let mut s = hello(&self.sam).await?;
         let r = cmd(
@@ -121,7 +121,7 @@ impl Session {
     }
 }
 
-/// I2P's base64 uses `-` and `~` instead of `+` and `/`.
+/// Decodes I2P base64, which uses `-` and `~` for the values 62 and 63.
 fn i2p_b64_decode(s: &str) -> io::Result<Vec<u8>> {
     const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-~";
     let mut out = Vec::new();
@@ -130,7 +130,7 @@ fn i2p_b64_decode(s: &str) -> io::Result<Vec<u8>> {
         let v = A
             .iter()
             .position(|x| *x == c)
-            .ok_or_else(|| io::Error::other("bad destination"))? as u32;
+            .ok_or_else(|| io::Error::other("Invalid I2P destination"))? as u32;
         acc = acc << 6 | v;
         bits += 6;
         if bits >= 8 {
@@ -156,7 +156,7 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    /// A tiny fake SAM bridge: enough protocol to exercise create/connect/accept.
+    /// Minimal fake SAM bridge for testing create, connect and accept.
     async fn fake_sam() -> String {
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = l.local_addr().unwrap().to_string();
@@ -214,7 +214,7 @@ mod tests {
         let mut b = [0u8; 4];
         c.read_exact(&mut b).await.unwrap();
         assert_eq!(&b, b"cell");
-        // Accept drops the peer's destination and hands over the raw stream intact.
+        // Accept discards the peer's destination and returns the stream unchanged.
         let mut a = sess.accept().await.unwrap();
         let mut p = [0u8; 4];
         a.read_exact(&mut p).await.unwrap();

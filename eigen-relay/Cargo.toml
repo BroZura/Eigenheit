@@ -1,6 +1,6 @@
 [package]
 name = "eigen-relay"
-description = "EIGENHEIT relay: RAM-only, logless mailbox store"
+description = "EIGENHEIT relay server. Stores encrypted messages in RAM only and writes no logs."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

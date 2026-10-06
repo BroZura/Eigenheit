@@ -1,13 +1,14 @@
-# cargo-deny: licenses, advisories, bans, sources.
+# cargo-deny configuration: licenses, security advisories, banned crates and crate sources.
 [graph]
 all-features = false
 
 [advisories]
 version = 2
 yanked = "deny"
-# `paste` is an unmaintained compile-time proc-macro reached via ratatui; it is not
-# a vulnerability and never runs in the shipped binary. Revisit on the next ratatui bump.
-ignore = [{ id = "RUSTSEC-2024-0436", reason = "unmaintained build-time macro via ratatui, no known vulnerability" }]
+# `paste` is an unmaintained procedural macro that ratatui uses at compile time.
+# It has no known vulnerability and is not part of the released binary.
+# Review this exception when ratatui is updated.
+ignore = [{ id = "RUSTSEC-2024-0436", reason = "Unmaintained compile-time macro used by ratatui. No known vulnerability." }]
 
 [licenses]
 version = 2
@@ -18,7 +19,8 @@ confidence-threshold = 0.9
 multiple-versions = "warn"
 wildcards = "deny"
 allow-wildcard-paths = true
-# No telemetry, no HTTP clients, no update checkers, no logging frameworks in the graph.
+# Crates for telemetry, HTTP clients, update checks, logging and OpenSSL are not
+# allowed in the dependency graph.
 deny = [
   { name = "reqwest" }, { name = "hyper" }, { name = "ureq" }, { name = "curl" },
   { name = "sentry" }, { name = "opentelemetry" }, { name = "log4rs" }, { name = "env_logger" },

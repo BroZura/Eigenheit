@@ -1,4 +1,5 @@
-//! Thin wrappers over audited primitives. No custom cryptography here.
+//! Thin wrappers around audited cryptographic primitives. This module contains no
+//! custom cryptography.
 use blake2::digest::{consts::U32, Digest, KeyInit, Mac};
 use blake2::{Blake2b, Blake2bMac};
 use chacha20poly1305::aead::{Aead, Payload};
@@ -97,8 +98,9 @@ pub fn open_fixed(key: &Key, data: &[u8], aad: &[u8]) -> Result<Zeroizing<Vec<u8
     Ok(Zeroizing::new(pt[2..2 + n].to_vec()))
 }
 
-/// AEAD with an explicit nonce. Callers must guarantee the key is single-use
-/// (ratchet message keys, sender-key entries) — enforced by consuming the key types.
+/// AEAD with an explicit nonce. Callers must ensure that each key is used only once
+/// (ratchet message keys, sender-key entries). The key types enforce this because they
+/// are consumed on use.
 pub fn aead_seal(key: &Key, nonce: &[u8; 24], pt: &[u8], aad: &[u8]) -> Vec<u8> {
     XChaCha20Poly1305::new(key.into())
         .encrypt(XNonce::from_slice(nonce), Payload { msg: pt, aad })
@@ -112,7 +114,7 @@ pub fn aead_open(key: &Key, nonce: &[u8; 24], ct: &[u8], aad: &[u8]) -> Result<Z
         .map_err(|_| Error::Crypto)
 }
 
-/// Fill `buf` from `len` onward with random bytes so padding never looks like padding.
+/// Extend `buf` to `len` bytes with random data so that the padding cannot be recognized.
 pub fn pad_random(buf: &mut Vec<u8>, len: usize) {
     let start = buf.len();
     if start < len {

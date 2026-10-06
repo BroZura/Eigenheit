@@ -1,7 +1,7 @@
-//! Dial bound to one network interface (a VPN or WireGuard tunnel). Binding with
-//! SO_BINDTODEVICE fails closed: if the tunnel is down, the connection fails —
-//! it never silently takes another route. Hostnames are refused in this mode,
-//! because resolving them would ask a DNS server outside the tunnel.
+//! Connections bound to one network interface (a VPN or WireGuard tunnel), using
+//! SO_BINDTODEVICE. If the tunnel is down, the connection fails. Traffic is never
+//! sent over another route. Host names are refused in this mode, because
+//! resolving them would send a DNS query outside the tunnel.
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 
@@ -14,7 +14,7 @@ pub enum Kind {
     Other,
 }
 
-/// Does the interface exist, and what is it? (Linux: /sys/class/net)
+/// Checks that the interface exists and returns its kind. Reads /sys/class/net (Linux).
 pub fn inspect(name: &str) -> io::Result<Kind> {
     if name.is_empty() || name.contains('/') || name.contains("..") {
         return Err(io::ErrorKind::InvalidInput.into());
@@ -34,14 +34,15 @@ pub fn inspect(name: &str) -> io::Result<Kind> {
     })
 }
 
-/// Connect to an IP literal, optionally bound to `device`.
+/// Connects to `host`. If `device` is set, `host` must be an IP address and the
+/// connection is bound to that interface.
 pub async fn connect(host: &str, port: u16, device: Option<&str>) -> io::Result<TcpStream> {
     let Some(dev) = device else {
         return TcpStream::connect((host, port)).await;
     };
     let ip: IpAddr = host.trim_matches(['[', ']']).parse().map_err(|_| {
         io::Error::other(
-            "an IP address is required when bound to a tunnel (DNS would go around it)",
+            "An IP address is required when connections are bound to an interface, because a DNS lookup would leave the tunnel",
         )
     })?;
     let addr = SocketAddr::new(ip, port);
@@ -62,7 +63,7 @@ fn bind(sock: &TcpSocket, dev: &str) -> io::Result<()> {
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
 fn bind(_: &TcpSocket, _: &str) -> io::Result<()> {
     Err(io::Error::other(
-        "binding to an interface is only supported on Linux",
+        "Binding to a network interface requires Linux or Android",
     ))
 }
 
@@ -84,7 +85,7 @@ mod tests {
         );
         assert!(
             connect("localhost", port, Some("lo")).await.is_err(),
-            "no DNS in tunnel mode"
+            "host names must be refused when bound to an interface"
         );
         assert!(inspect("lo").is_ok());
         assert!(inspect("eigen-nope0").is_err());

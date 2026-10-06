@@ -15,7 +15,7 @@ pub mod wire;
 pub mod words;
 pub mod x3dh;
 
-/// Every error is deliberately vague: details could leak through UI or logs.
+/// Error messages are kept general so that no details leak through the UI or logs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     Malformed,
@@ -29,12 +29,12 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
-            Error::Malformed => "malformed",
-            Error::Crypto => "does not open",
-            Error::TooLong => "too long — say less",
-            Error::Unknown => "unknown",
-            Error::Replay => "replayed",
-            Error::Pow => "insufficient work",
+            Error::Malformed => "The data is invalid.",
+            Error::Crypto => "The data could not be decrypted or verified.",
+            Error::TooLong => "The message is too long.",
+            Error::Unknown => "An unknown error occurred.",
+            Error::Replay => "This message was already received.",
+            Error::Pow => "The proof of work is insufficient.",
         };
         f.write_str(s)
     }
@@ -44,7 +44,7 @@ impl std::error::Error for Error {}
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Seconds since the Unix epoch. Used only for TTLs and PoW hours.
+/// Seconds since the Unix epoch. Used only for TTLs and proof-of-work hours.
 pub fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -54,8 +54,9 @@ pub fn now() -> u64 {
 
 #[cfg(test)]
 mod zeroize_checks {
-    //! Secrets must wipe themselves. Safe Rust cannot read freed memory, so these
-    //! are compile-time guarantees plus explicit-wipe checks on our own types.
+    //! Secret types must be zeroized when dropped. Safe Rust cannot read freed memory,
+    //! so these tests check the trait bounds at compile time and test explicit wiping
+    //! of the types defined in this crate.
     use zeroize::{Zeroize, ZeroizeOnDrop};
 
     fn on_drop<T: ZeroizeOnDrop>() {}

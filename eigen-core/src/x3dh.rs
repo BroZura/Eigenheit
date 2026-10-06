@@ -109,7 +109,7 @@ pub fn initiate(
     })
 }
 
-/// Bob opens the sealed envelope key before he knows who wrote to him.
+/// Bob's side: derive the sealed-envelope key before the sender is known.
 pub fn seal_key_for(bob: &Mask, ek_pub: &[u8; 32]) -> Zeroizing<[u8; 32]> {
     let dh3 = bob.spk.diffie_hellman(&PublicKey::from(*ek_pub)).to_bytes();
     kdf32(&[0u8; 32], &dh3, b"eigen/seal")
@@ -137,7 +137,7 @@ pub fn respond(
     let dh4 = if opk_id == NO_OPK {
         None
     } else {
-        // One-time: removed from memory on use. A replay finds nothing.
+        // One-time prekeys are removed from memory on use, so a replay fails.
         Some(
             bob.take_opk(opk_id)
                 .ok_or(Error::Replay)?

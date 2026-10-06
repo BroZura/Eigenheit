@@ -1,5 +1,5 @@
 //! UI state and command interpretation. Protocol work happens in the engine;
-//! the app only records what I see and emits [`Action`]s.
+//! the app only records what is displayed and emits [`Action`]s.
 use std::collections::HashSet;
 use std::time::Instant;
 
@@ -28,7 +28,7 @@ pub struct Line {
     pub id: Option<[u8; 8]>,
     /// `/me` action.
     pub action: bool,
-    /// `/once`: vanishes 30 s after it was on my screen.
+    /// `/once`: removed 30 seconds after it is first displayed.
     pub once: bool,
     pub seen: bool,
 }
@@ -190,7 +190,8 @@ pub struct App {
     pub mode: Mode,
     pub scroll: usize,
     pub tor: TorState,
-    /// How I reach relays: "tor", "i2p", "vpn wg0", combinations.
+    /// Transport label for the status bar, for example "Tor", "I2P", "VPN wg0" or
+    /// "Direct (unencrypted)". Several labels are joined with "+".
     pub transport: String,
     pub cover: bool,
     pub locked: bool,
@@ -200,19 +201,21 @@ pub struct App {
     pub quit: bool,
     panic_presses: Vec<Instant>,
     next_id: u64,
-    /// Keys I have verified out of band (✓).
+    /// Keys verified out of band (✓).
     pub trusted: HashSet<Who>,
-    /// Shoulder-surfing veil: names and words hidden until a key is pressed.
+    /// Screen hiding: names and messages are hidden until a key is pressed.
     pub veiled: bool,
     pub veil_idle: Option<u64>,
     pub lock: Option<Lock>,
     pub lock_input: zeroize::Zeroizing<String>,
-    /// Burn myself if no key is pressed for this long.
+    /// Delete all data and exit if no key is pressed for this long.
     pub deadman: Option<u64>,
     pub last_key: Instant,
     history: Vec<String>,
     hist_pos: Option<usize>,
     pub shown: Option<Shown>,
+    /// First visible row of the help overlay.
+    pub help_scroll: usize,
     /// Text waiting to be sent to the terminal clipboard (OSC 52).
     pub clip_out: Option<zeroize::Zeroizing<String>>,
     /// Set once something was copied; the clipboard is cleared on exit and burn.
@@ -220,65 +223,80 @@ pub struct App {
 }
 
 pub const HELP: &[(&str, &str)] = &[
-    ("/mask", "put on a fresh mask (Ctrl-M where supported)"),
-    ("/masks [n]", "list my masks, or wear mask n"),
-    (
-        "/union [passphrase]",
-        "form a union; prints its invite (Ctrl-U)",
-    ),
-    ("/join <invite|passphrase>", "enter a union"),
-    (
-        "/leave",
-        "leave this union or dm, instantly, without a trace",
-    ),
-    ("/dm <card>", "open a dm with a mask's card"),
-    (
-        "/card",
-        "Show the contact card of the current mask. Press C to copy it.",
-    ),
+    ("/mask", "Create a new mask (Ctrl-M where supported)."),
+    ("/masks [n]", "List your masks, or switch to mask n."),
+    ("/card", "Show your contact card. Press C to copy it."),
     (
         "/copy [card|invite]",
-        "Copy the contact card or the union invite to the clipboard.",
+        "Copy your contact card or the union invite.",
     ),
-    ("/verify [name]", "fingerprint + SAS to compare out of band"),
-    ("/ttl <30m|1h|2d>", "how long my words live here"),
-    ("/renew", "I stay for the next term of this union"),
-    ("/drop <name>", "vote to rotate keys away from someone"),
-    ("/mute <name>", "my screen, my rules: hide someone locally"),
-    ("/me <action>", "say what I do"),
+    ("/dm <card>", "Open a direct message using a contact card."),
     (
-        "/once <words>",
-        "words that vanish 30 s after they are read",
+        "/union [passphrase]",
+        "Create a union and show its invite (Ctrl-U).",
     ),
-    ("/unsay", "take back my last words here"),
-    ("/who", "who is in this union (as far as I can see)"),
-    ("/invite", "show this union's current invite"),
+    (
+        "/join <invite|passphrase>",
+        "Join a union with an invite or passphrase.",
+    ),
+    ("/invite", "Show this union's invite. Press C to copy it."),
+    ("/leave", "Leave this union or direct message."),
+    ("/verify [name]", "Show the fingerprint and SAS to compare."),
     (
         "/trust [name]",
-        "mark a key verified (✓) after comparing the SAS",
+        "Mark a key as verified (✓), or remove the mark.",
     ),
+    (
+        "/ttl <30m|1h|2d>",
+        "Set message expiry, or your term in a union.",
+    ),
+    ("/renew", "Stay in this union for its next term."),
+    ("/drop <name>", "Vote to remove a member from this union."),
+    ("/who", "List the union members visible to you."),
+    (
+        "/mute <name>",
+        "Hide someone's messages on your screen only.",
+    ),
+    ("/me <action>", "Send a message that describes an action."),
+    (
+        "/once <words>",
+        "Send a message removed 30 s after it is read.",
+    ),
+    ("/unsay", "Take back your last message."),
     (
         "/veil [2m|off]",
-        "hide names and words now (Ctrl-V), or after idle",
+        "Hide the screen now (Ctrl-V) or when idle.",
     ),
     (
-        "/lock <passphrase>",
-        "lock the screen; 5 wrong tries burn everything",
+        "/lock [passphrase]",
+        "Lock the screen. 5 wrong tries delete all data.",
     ),
     (
         "/deadman <30m|off>",
-        "burn everything if I am idle that long",
+        "Delete all data and exit after this idle time.",
     ),
-    ("/cover on|off", "constant-rate cover traffic"),
-    ("/keep", "remember this union in my vault (toggle)"),
-    ("/export [path]", "my PGP public key (screen, or file)"),
-    ("/import <path|card>", "pin someone's PGP key or card"),
-    ("/burn", "destroy everything and exit (Ctrl-X x3)"),
-    ("/help", "this (F1)"),
-    ("Tab / Shift-Tab", "next / previous union or dm"),
-    ("PgUp / PgDn", "scroll"),
-    ("Up / Down", "my earlier lines (RAM only)"),
-    ("Ctrl-L", "redraw"),
+    (
+        "/cover on|off",
+        "Turn constant-rate cover traffic on or off.",
+    ),
+    ("/keep", "Save this union in the vault, or remove it."),
+    (
+        "/export [path]",
+        "Show your PGP public key or save it to a file.",
+    ),
+    (
+        "/import <path|card>",
+        "Import a key from a PGP key file or a card.",
+    ),
+    ("/burn", "Delete all data and exit (Ctrl-X three times)."),
+    ("/help", "Show this list (F1)."),
+    (
+        "Tab / Shift-Tab",
+        "Go to the next or previous conversation.",
+    ),
+    ("PgUp / PgDn", "Scroll up or down."),
+    ("Up / Down", "Show earlier input (kept in RAM only)."),
+    ("Ctrl-L", "Redraw the screen."),
 ];
 
 pub fn parse_duration(s: &str) -> Option<u64> {
@@ -302,7 +320,7 @@ pub fn fmt_duration(secs: u64) -> String {
 
 impl App {
     pub fn new(color: bool) -> App {
-        let mut home = View::new(0, ViewKind::Home, "me".into(), 0);
+        let mut home = View::new(0, ViewKind::Home, "Home".into(), 0);
         home.ttl = 0;
         App {
             masks: Vec::new(),
@@ -332,6 +350,7 @@ impl App {
             history: Vec::new(),
             hist_pos: None,
             shown: None,
+            help_scroll: 0,
             clip_out: None,
             clip_used: false,
         }
@@ -418,7 +437,7 @@ impl App {
         );
     }
 
-    /// A message arrived (or I said one). Handles every kind in one place.
+    /// A message arrived or was sent. Handles every kind in one place.
     #[allow(clippy::too_many_arguments)]
     pub fn receive(
         &mut self,
@@ -439,7 +458,7 @@ impl App {
                 }
                 let after = self.view_mut(vid).map(|v| v.lines.len()).unwrap_or(0);
                 if after < before && !mine {
-                    self.notice(vid, format!("{} took back their words.", from.name()));
+                    self.notice(vid, format!("{} took back a message.", from.name()));
                 }
             }
             SAY_TEXT | SAY_ONCE | SAY_ACTION => {
@@ -463,7 +482,7 @@ impl App {
         }
     }
 
-    /// The id of my most recent message in a view.
+    /// The id of the user's most recent message in a view.
     pub fn last_mine(&self, vid: u64) -> Option<[u8; 8]> {
         self.views
             .iter()
@@ -492,7 +511,6 @@ impl App {
         self.input = pos.map(|i| self.history[i].clone()).unwrap_or_default();
     }
 
-    /// Forget everything this screen remembers.
     /// Show text alone on a clean screen, so it can be selected or copied.
     pub fn show(&mut self, title: impl Into<String>, text: String) {
         self.shown = Some(Shown {
@@ -508,6 +526,7 @@ impl App {
         self.clip_out = Some(zeroize::Zeroizing::new(text));
     }
 
+    /// Clear all state held by the interface.
     pub fn wipe(&mut self) {
         self.shown = None;
         self.clip_out = None;
@@ -545,7 +564,7 @@ impl App {
             return;
         }
         if self.veiled {
-            // The key that lifts the veil is swallowed: nothing typed blind.
+            // The key that ends screen hiding is discarded, so no input is typed while hidden.
             self.veiled = false;
             return;
         }
@@ -556,8 +575,17 @@ impl App {
                 return;
             }
             Mode::Help => {
-                if matches!(k.code, KeyCode::Esc | KeyCode::F(1) | KeyCode::Char('q')) {
-                    self.mode = Mode::Normal;
+                match k.code {
+                    KeyCode::Esc | KeyCode::F(1) | KeyCode::Char('q') => self.mode = Mode::Normal,
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.help_scroll = self.help_scroll.saturating_sub(1)
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        self.help_scroll = (self.help_scroll + 1).min(HELP.len())
+                    }
+                    KeyCode::PageUp => self.help_scroll = self.help_scroll.saturating_sub(10),
+                    KeyCode::PageDown => self.help_scroll = (self.help_scroll + 10).min(HELP.len()),
+                    _ => {}
                 }
                 return;
             }
@@ -589,7 +617,10 @@ impl App {
             (KeyCode::Char('m'), true) => self.outbox.push(Action::NewMask),
             (KeyCode::Char('n'), true) => self.cycle(1),
             (KeyCode::Char('p'), true) => self.cycle(-1),
-            (KeyCode::F(1), _) => self.mode = Mode::Help,
+            (KeyCode::F(1), _) => {
+                self.help_scroll = 0;
+                self.mode = Mode::Help;
+            }
             (KeyCode::Tab, _) => self.cycle(1),
             (KeyCode::BackTab, _) => self.cycle(-1),
             (KeyCode::PageUp, _) => self.scroll += 5,
@@ -626,7 +657,7 @@ impl App {
         }
     }
 
-    /// Called about once a second: veil on idle, dead-man switch.
+    /// Called about once a second: hides the screen when idle and checks auto-burn (/deadman).
     pub fn idle_check(&mut self) {
         let idle = self.last_key.elapsed().as_secs();
         if let Some(v) = self.veil_idle {
@@ -673,7 +704,7 @@ impl App {
         self.scroll = 0;
     }
 
-    /// Panic key: three Ctrl-X within 1.5 s. Returns true when it fires.
+    /// Burn key: three Ctrl-X within 1.5 s. Returns true when it fires.
     pub fn panic_press(&mut self) -> bool {
         let t = Instant::now();
         self.panic_presses
@@ -689,7 +720,7 @@ impl App {
         if line.is_empty() {
             return;
         }
-        // Never remember a lock passphrase, even in RAM.
+        // Never store a lock passphrase in the history, even in RAM.
         if !line.starts_with("/lock") && self.history.last().map(|h| h != line).unwrap_or(true) {
             self.history.push(line.to_string());
             if self.history.len() > 100 {
@@ -702,7 +733,7 @@ impl App {
             let v = self.view();
             if v.kind == ViewKind::Home {
                 self.here_notice(
-                    "I speak in a union or a dm. /union, /join, /dm — /help for more.",
+                    "To send messages, open a union or direct message with /union, /join or /dm. Type /help for a list of commands.",
                 );
             } else {
                 self.outbox
@@ -721,7 +752,7 @@ impl App {
         let kind = self.view().kind;
         let need = |app: &mut App, k: ViewKind| {
             if kind != k && !(k == ViewKind::Dm && kind == ViewKind::Union) {
-                app.here_notice("not here.");
+                app.here_notice("This command is only available in a union.");
                 false
             } else {
                 true
@@ -754,7 +785,7 @@ impl App {
             "join" if !arg.is_empty() => self.outbox.push(Action::Join(arg.to_string())),
             "leave" => {
                 if kind == ViewKind::Home {
-                    self.here_notice("I am already alone here.");
+                    self.here_notice("There is no union or direct message to leave.");
                 } else {
                     self.outbox.push(Action::Leave(vid));
                 }
@@ -773,7 +804,9 @@ impl App {
             "verify" => self.outbox.push(Action::Verify(vid, arg_opt)),
             "ttl" => match parse_duration(arg) {
                 Some(s) if kind != ViewKind::Home => self.outbox.push(Action::Ttl(vid, s)),
-                _ => self.here_notice("/ttl <10s..7d>, e.g. /ttl 30m — in a union or dm"),
+                _ => self.here_notice(
+                    "Usage: /ttl <duration> from 10s to 7d, for example /ttl 30m. Use it in a union or direct message.",
+                ),
             },
             "renew" => {
                 if need(self, ViewKind::Union) {
@@ -799,13 +832,13 @@ impl App {
                             v.muted.insert(w);
                             v.lines.retain(|l| l.from != Some(w));
                             self.here_notice(format!(
-                                "{arg} is silent on my screen. /mute again to hear."
+                                "Messages from {arg} are hidden on your screen. Type /mute {arg} again to show them."
                             ));
                         } else {
-                            self.here_notice(format!("{arg} is audible again."));
+                            self.here_notice(format!("Messages from {arg} are shown again."));
                         }
                     }
-                    None => self.here_notice("nobody by that name spoke here."),
+                    None => self.here_notice("No one with that name has sent a message here."),
                 }
             }
             "cover" => match arg {
@@ -836,42 +869,47 @@ impl App {
                 }
                 "off" => {
                     self.veil_idle = None;
-                    self.here_notice("no automatic veil.");
+                    self.here_notice("Automatic screen hiding is off.");
                 }
                 d => match parse_duration(d) {
                     Some(s) => {
                         self.veil_idle = Some(s);
-                        self.here_notice(format!("the veil falls after {} idle.", fmt_duration(s)));
+                        self.here_notice(format!(
+                            "The screen will be hidden after {} without input.",
+                            fmt_duration(s)
+                        ));
                     }
-                    None => self.here_notice("/veil, /veil 2m, /veil off"),
+                    None => self.here_notice(
+                        "Usage: /veil to hide the screen now, /veil <duration> to hide it when idle, or /veil off.",
+                    ),
                 },
             },
             "lock" => {
                 if !arg.is_empty() {
-                    self.here_notice("stretching the lock passphrase…");
+                    self.here_notice("Setting up the screen lock. This can take a moment.");
                     self.lock = Lock::new(arg);
                 } else if let Some(l) = self.lock.as_mut() {
                     l.engaged = true;
                     l.fails = 0;
                 } else {
-                    self.here_notice("/lock <passphrase> — the first time needs one.");
+                    self.here_notice("Usage: /lock <passphrase>. A passphrase is required the first time.");
                 }
                 self.lock_input.clear();
             }
             "deadman" => match arg {
                 "off" => {
                     self.deadman = None;
-                    self.here_notice("dead-man switch off.");
+                    self.here_notice("Auto-burn is off.");
                 }
                 d => match parse_duration(d) {
                     Some(s) if s >= 60 => {
                         self.deadman = Some(s);
                         self.here_notice(format!(
-                            "if I touch nothing for {}, everything burns.",
+                            "Auto-burn is on. If no key is pressed for {}, all data is deleted and EIGENHEIT exits.",
                             fmt_duration(s)
                         ));
                     }
-                    _ => self.here_notice("/deadman <1m..7d> or /deadman off"),
+                    _ => self.here_notice("Usage: /deadman <duration> from 1m to 7d, or /deadman off."),
                 },
             },
             "keep" => {
@@ -881,9 +919,14 @@ impl App {
             }
             "import" if !arg.is_empty() => self.outbox.push(Action::Import(arg.to_string())),
             "burn" => self.outbox.push(Action::Burn),
-            "help" => self.mode = Mode::Help,
+            "help" => {
+                self.help_scroll = 0;
+                self.mode = Mode::Help;
+            }
             "quit" | "exit" => self.outbox.push(Action::Quit),
-            _ => self.here_notice(format!("/{name}? — /help")),
+            _ => self.here_notice(format!(
+                "Unknown command or missing argument: /{name}. Type /help for a list of commands."
+            )),
         }
     }
 }
@@ -921,7 +964,7 @@ mod tests {
         a.veiled = true;
         press(&mut a, KeyCode::Char('x'));
         assert!(!a.veiled);
-        assert!(a.input.is_empty(), "nothing typed blind");
+        assert!(a.input.is_empty(), "no input while the screen is hidden");
         a.key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL));
         assert!(a.veiled);
     }
@@ -933,7 +976,10 @@ mod tests {
         a.input = "/lock hunter2".into();
         a.submit();
         assert!(a.is_locked());
-        assert!(a.history.is_empty(), "lock passphrase never kept");
+        assert!(
+            a.history.is_empty(),
+            "lock passphrase is not stored in the history"
+        );
         for c in "hunter2".chars() {
             press(&mut a, KeyCode::Char(c));
         }
@@ -984,7 +1030,7 @@ mod tests {
             .unwrap();
         assert!(
             once.expires.unwrap() <= now() + ONCE_SECS,
-            "once-line burns soon after being seen"
+            "a /once message expires soon after it is displayed"
         );
     }
 

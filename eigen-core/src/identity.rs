@@ -1,4 +1,4 @@
-//! Masks: locally generated identities. I am my key.
+//! Masks: identities generated on this device. Each mask is defined by its signing key.
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand_core::OsRng;
 use x25519_dalek::{PublicKey, StaticSecret};
@@ -11,7 +11,8 @@ use crate::{Error, Result};
 
 pub const MAX_OPKS: usize = 16;
 
-/// The public face of a key: name, glyph, colour, identicon. Derived, never chosen.
+/// Public identity of a key. The name, glyph, color and identicon are derived from
+/// the key and cannot be chosen.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct Who(pub [u8; 32]);
 
@@ -26,7 +27,7 @@ impl Who {
     pub fn glyph(&self) -> char {
         GLYPHS[self.digest()[4] as usize % GLYPHS.len()]
     }
-    /// Stable colour index into the UI palette.
+    /// Stable color index into the UI palette.
     pub fn color(&self) -> u8 {
         self.digest()[5]
     }
@@ -122,7 +123,7 @@ impl Card {
     }
 }
 
-/// A mask: an identity I hold. Secret parts zeroize on drop.
+/// A mask: an identity held by the local user. Secret parts are zeroized on drop.
 pub struct Mask {
     pub sig: SigningKey,
     pub ik: StaticSecret,
@@ -208,7 +209,7 @@ impl Mask {
         Some(self.opks.remove(i).1)
     }
 
-    /// Serialise secrets (for the vault only).
+    /// Serialize secrets (for the vault only).
     pub fn to_bytes(&self) -> zeroize::Zeroizing<Vec<u8>> {
         let mut w = Writer::new();
         w.bytes(&self.sig.to_bytes())
@@ -230,7 +231,7 @@ impl Mask {
             next_opk: r.u32()?,
             opks: Vec::new(),
         };
-        // One-time prekeys are never persisted: fresh ones after every start.
+        // One-time prekeys are never saved. New ones are generated on every start.
         m.refill_opks();
         Ok(m)
     }

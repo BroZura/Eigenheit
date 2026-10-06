@@ -1,6 +1,6 @@
-//! EIGENHEIT relay. Holds short-lived, fixed-size ciphertext under opaque mailbox
-//! ids. Knows no users, rooms, names or wall-clock times. Writes nothing to disk,
-//! logs nothing — not even errors.
+//! EIGENHEIT relay. Stores short-lived, fixed-size ciphertext under mailbox
+//! IDs that look random to the relay. The relay does not know users, rooms, names or wall-clock times.
+//! It writes nothing to disk and produces no output, including for errors.
 #![forbid(unsafe_code)]
 
 pub mod store;
@@ -20,7 +20,7 @@ pub use store::{Config, Store};
 const MAX_CONNS: usize = 1024;
 const IDLE: Duration = Duration::from_secs(600);
 
-/// The relay's shared state, with its TTL sweeper running.
+/// Shared relay state. Starting it also starts the task that removes expired items.
 #[derive(Clone)]
 pub struct Relay {
     store: Arc<Mutex<Store>>,
@@ -59,12 +59,13 @@ impl Relay {
         });
     }
 
-    /// Plain cells. For the loopback listener behind an onion service.
+    /// Serves unencrypted cells. Use it for the loopback listener behind an onion service.
     pub async fn serve_plain(self, listener: TcpListener) {
         self.serve_tcp(listener, None).await
     }
 
-    /// Noise-encrypted cells. For a public (clear-net / VPN / WireGuard) listener.
+    /// Serves Noise-encrypted cells. Use it for a public listener, for example on
+    /// a VPN or WireGuard network.
     pub async fn serve_noise(self, listener: TcpListener, key: Arc<RelayKey>) {
         self.serve_tcp(listener, Some(key)).await
     }
@@ -75,13 +76,13 @@ impl Relay {
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 continue;
             };
-            // The peer address is dropped right here and never stored.
+            // The peer address is discarded here and never stored.
             let _ = sock.set_nodelay(true);
             self.spawn(sock, key.clone());
         }
     }
 
-    /// Accept streams from an I2P SAM session, forever.
+    /// Accepts streams from an I2P SAM session until the process exits.
     pub async fn serve_i2p(self, session: Arc<eigen_transport::sam::Session>) {
         loop {
             match session.accept().await {
@@ -92,7 +93,8 @@ impl Relay {
     }
 }
 
-/// Serve plain cells forever on `listener`. Errors are swallowed: a dropped connection says nothing.
+/// Serves unencrypted cells on `listener` until the process exits. Errors are
+/// ignored and produce no output.
 pub async fn serve(listener: TcpListener, cfg: Config) {
     Relay::start(cfg).serve_plain(listener).await
 }

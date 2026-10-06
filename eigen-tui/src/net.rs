@@ -1,5 +1,5 @@
-//! A link to one relay: fixed cells, one request → one response, optional
-//! constant-rate cover traffic and random delivery delay.
+//! A link to one relay. It sends fixed-size cells, one response per request,
+//! with optional constant-rate cover traffic and a random delivery delay.
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
@@ -18,18 +18,19 @@ use eigen_transport::{device, noise, sam};
 #[derive(Clone, Debug)]
 pub struct LinkCfg {
     pub relay: RelayAddr,
-    /// SOCKS5 proxy (tor). `None` = direct TCP (only with consent).
+    /// SOCKS5 proxy address for Tor. It is set only for `.onion` relays.
     pub socks: Option<String>,
-    /// Circuit isolation tag; one per mask/union.
+    /// Circuit isolation tag. Each mask, direct message and union has its own tag.
     pub isolation: String,
-    /// Cover traffic: one cell every `cover_ms` ± 30 %, always.
+    /// Cover traffic. When it is on, one cell is sent every `cover_ms` ± 30 %.
     pub cover: Arc<AtomicBool>,
     pub cover_ms: u64,
-    /// Without cover: PUTs wait a random 0..max_delay_ms before release.
+    /// When cover traffic is off, each PUT waits a random 0..max_delay_ms before it is sent.
     pub max_delay_ms: u64,
     /// I2P SAM bridge, for `.i2p` relays. Each link gets its own transient destination.
     pub sam: Option<String>,
-    /// VPN/WireGuard interface every direct connection is bound to (fails closed).
+    /// VPN or WireGuard interface that every direct connection is bound to.
+    /// If the interface is not available, the connection fails.
     pub device: Option<String>,
 }
 
@@ -161,7 +162,7 @@ async fn connect(cfg: &LinkCfg) -> std::io::Result<Conn> {
         let socks = cfg
             .socks
             .as_deref()
-            .ok_or_else(|| std::io::Error::other("onion relay needs tor"))?;
+            .ok_or_else(|| std::io::Error::other("An onion relay requires a Tor SOCKS proxy"))?;
         (
             tor::connect(socks, &r.host, r.port, &cfg.isolation).await?,
             None,
@@ -170,7 +171,7 @@ async fn connect(cfg: &LinkCfg) -> std::io::Result<Conn> {
         let bridge = cfg
             .sam
             .as_deref()
-            .ok_or_else(|| std::io::Error::other("i2p relay needs a SAM bridge"))?;
+            .ok_or_else(|| std::io::Error::other("An I2P relay requires a SAM bridge"))?;
         let s = sam::Session::create(bridge).await?;
         (s.connect(&r.host).await?, Some(s))
     } else {
@@ -202,7 +203,7 @@ async fn run(cfg: LinkCfg, mut rx: mpsc::UnboundedReceiver<Job>, state: Arc<Atom
             Ok(Ok(s)) => s,
             _ => {
                 state.store(2, Ordering::Relaxed);
-                // Fail queued work rather than let it pile up silently.
+                // Fail all queued jobs so that their callers receive an error.
                 if let Some(j) = held.take() {
                     drop(j.reply);
                 }
@@ -262,7 +263,7 @@ async fn run(cfg: LinkCfg, mut rx: mpsc::UnboundedReceiver<Job>, state: Arc<Atom
                 tokio::select! {
                     _ = tick.tick() => {
                         tick.reset_after(jitter(cfg.cover_ms.max(50)));
-                        // Exactly one cell per tick: real work if queued, else padding.
+                        // Send exactly one cell per tick: a queued job if there is one, otherwise padding.
                         match rx.try_recv() {
                             Ok(j) => Some(j),
                             Err(mpsc::error::TryRecvError::Empty) => None,
@@ -315,7 +316,7 @@ async fn run(cfg: LinkCfg, mut rx: mpsc::UnboundedReceiver<Job>, state: Arc<Atom
                 None => wr.write_all(&cell).await,
             };
             if sent.is_err() {
-                // Re-queue the job that did not make it.
+                // Queue the unsent job again.
                 if let Some(r) = pending.lock().await.remove(&rid) {
                     held = Some(Job { op, reply: r });
                 }
@@ -466,7 +467,7 @@ mod tests {
         .unwrap();
         let all = link.fetch_all(m, 0, 10).await.unwrap();
         assert_eq!(&all[0].blob[..18], b"through the tunnel");
-        // Wrong key: the link never comes up (relay impersonation fails).
+        // With a wrong key the link does not come up, so the relay cannot be impersonated.
         let mut bad = cfg(
             RelayAddr {
                 host: "127.0.0.1".into(),

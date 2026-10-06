@@ -1,9 +1,9 @@
-//! Process hardening. The ONLY module in EIGENHEIT that contains `unsafe`.
-//! Each call is a plain libc syscall wrapper with no pointer juggling beyond
-//! passing a stack struct by reference.
+//! Process hardening. This is the only module in EIGENHEIT that contains
+//! `unsafe` code. Each call is a libc system call. At most, a reference to a
+//! struct on the stack is passed.
 #![allow(unsafe_code)]
 
-/// What the hardening pass achieved, shown honestly in the UI.
+/// The result of each hardening step. The status bar shows whether memory is locked.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Hardening {
     pub no_core: bool,
@@ -17,7 +17,7 @@ pub fn apply() -> Hardening {
         rlim_cur: 0,
         rlim_max: 0,
     };
-    // SAFETY: setrlimit reads a valid, initialised rlimit struct.
+    // SAFETY: setrlimit reads a valid, initialized rlimit struct.
     h.no_core = unsafe { libc::setrlimit(libc::RLIMIT_CORE, &zero) } == 0;
     #[cfg(target_os = "linux")]
     {
@@ -28,8 +28,9 @@ pub fn apply() -> Hardening {
     h
 }
 
-/// Lock all memory only when the limit allows it entirely; a partial lock that
-/// later makes allocations fail would be worse than an honest "swap: exposed".
+/// Lock all memory only when the limit allows the whole process to be locked.
+/// A partial lock can make later allocations fail. When memory is not locked,
+/// the status bar shows "Memory not locked".
 fn try_lock_memory() -> bool {
     #[cfg(target_os = "linux")]
     {

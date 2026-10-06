@@ -16,7 +16,7 @@ jobs:
       - run: cargo build --locked --workspace
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked --workspace
-      - name: relay writes nothing, logs nothing
+      - name: Check that the relay prints nothing, writes nothing to disk and has no open files
         run: cargo run --locked -p eigen-relay -- --self-test
   supply-chain:
     runs-on: ubuntu-latest
@@ -31,7 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: build twice, compare
+      - name: Build twice and compare the binaries
         run: |
           export SOURCE_DATE_EPOCH=0 RUSTFLAGS="--remap-path-prefix=$HOME=~ --remap-path-prefix=$PWD=."
           cargo build --locked --release --workspace

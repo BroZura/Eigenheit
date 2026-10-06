@@ -1,4 +1,4 @@
-//! The relay must not log and must not touch the disk while serving.
+//! While serving traffic, the relay must not produce output or write to disk.
 
 #[test]
 fn self_test_passes() {

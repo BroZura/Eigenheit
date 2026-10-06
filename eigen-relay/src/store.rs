@@ -1,4 +1,6 @@
-//! RAM-only mailbox store with hard TTL eviction, PoW and per-mailbox rate pressure.
+//! Mailbox store kept in RAM only. Items are removed when their TTL expires.
+//! Every put requires proof of work. The required difficulty rises with the put
+//! rate on each mailbox.
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
@@ -61,7 +63,8 @@ impl Store {
         self.total
     }
 
-    /// Difficulty rises by 2 bits per doubling of the put rate on a mailbox.
+    /// Required proof-of-work difficulty, in bits. It rises by 2 bits each time the
+    /// put rate on the mailbox doubles.
     pub fn required(&self, mbox: &Mbox) -> u8 {
         let n = self.boxes.get(mbox).map(|m| m.recent.len()).unwrap_or(0) as u32;
         let extra = 2 * (32 - (1 + n / 16).leading_zeros() - 1);
@@ -100,7 +103,7 @@ impl Store {
                     return Status::Pow(need);
                 }
                 if self.seen.contains_key(&tag) {
-                    return Status::Ok; // replay: accept silently, store nothing
+                    return Status::Ok; // Replay: report success and store nothing.
                 }
                 if self.total >= self.cfg.max_items {
                     return Status::Full;
@@ -162,7 +165,8 @@ impl Store {
         }
     }
 
-    /// Hard TTL eviction. Expired blobs are overwritten before release.
+    /// Removes expired items. Their data is overwritten with zeros before the
+    /// memory is released.
     pub fn sweep(&mut self) {
         self.sweep_at(Instant::now());
     }

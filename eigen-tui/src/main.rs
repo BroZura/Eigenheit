@@ -1,5 +1,5 @@
 #![deny(unsafe_code)]
-//! eigen — mine, not yours, not theirs.
+//! The eigen terminal client.
 use std::io::{stdout, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -22,16 +22,43 @@ use eigen_tui::engine::{Engine, Net, NetCfg, NetEvent};
 use eigen_tui::tor::RelayAddr;
 use eigen_tui::{harden, ui};
 
-const USAGE: &str = "eigen [--relay RELAY]... [--tor-socks 127.0.0.1:9050] [--sam 127.0.0.1:7656]
-      [--vpn IFACE | --wireguard IFACE] [--i-accept-the-risk]
-      [--cover] [--cover-ms 500] [--delay-ms 1500] [--vault PATH] [--no-boot]
+const USAGE: &str = "Usage: eigen [--relay RELAY]... [--tor-socks ADDR] [--sam ADDR]
+             [--vpn IFACE | --wireguard IFACE] [--i-accept-the-risk]
+             [--cover] [--cover-ms MS] [--delay-ms MS]
+             [--vault PATH | --ram-only] [--no-boot]
 
-  RELAY is one of:
-    x.onion:PORT          through tor (SOCKS, one circuit per mask/dm/union)
-    x.b32.i2p             through i2p (SAM, one transient destination per mask/dm/union)
-    IP:PORT#KEY           direct, Noise-encrypted; needs --vpn/--wireguard IFACE
-                          (every direct connection is bound to IFACE and fails closed)
-  Default: RAM-only. Nothing touches the disk.";
+RELAY has one of these forms:
+  x.onion:PORT     Connect through Tor (SOCKS). Each mask, direct message and
+                   union uses a separate circuit.
+  x.b32.i2p        Connect through I2P (SAM). Each mask, direct message and
+                   union uses a separate destination.
+  IP:PORT#KEY      Connect directly with Noise encryption. Requires --vpn or
+                   --wireguard. Every direct connection is bound to IFACE. If
+                   IFACE is not available, the connection fails.
+
+Options:
+  --relay RELAY            Relay to connect to. Can be given more than once.
+  --tor-socks ADDR         Address of the Tor SOCKS proxy.
+                           Default: 127.0.0.1:9050.
+  --sam ADDR               Address of the I2P SAM bridge.
+                           Default: 127.0.0.1:7656.
+  --vpn, --wireguard IFACE Network interface for direct connections.
+  --i-accept-the-risk      Allow relays and interfaces that are otherwise
+                           refused. Use this option for development only.
+  --cover                  Send cover traffic: cells at a constant rate,
+                           whether or not there are messages to send.
+  --cover-ms MS            Interval between cover traffic cells, in
+                           milliseconds. Default: 500.
+  --delay-ms MS            Maximum random delay before a message is sent
+                           while cover traffic is off, in milliseconds.
+                           Default: 1500.
+  --vault PATH             Store masks, known contact keys, keys marked as
+                           verified with /trust and unions saved with /keep
+                           in an encrypted file. Messages are never stored.
+  --ram-only               Keep all data in RAM only. This is the default.
+  --no-boot                Skip the start screen.
+
+By default, all data is kept in RAM only. Nothing is written to disk.";
 
 pub struct Opts {
     relays: Vec<RelayAddr>,
@@ -67,7 +94,7 @@ fn parse_args() -> Result<Opts, String> {
         match a.as_str() {
             "--relay" => o.relays.push(
                 RelayAddr::parse(&val()?)
-                    .ok_or("relay must be x.onion:PORT, x.b32.i2p or IP:PORT#KEY")?,
+                    .ok_or("Invalid relay address. Use x.onion:PORT, x.b32.i2p or IP:PORT#KEY.")?,
             ),
             "--tor-socks" => o.socks = val()?,
             "--sam" => o.sam = val()?,
@@ -79,6 +106,10 @@ fn parse_args() -> Result<Opts, String> {
             "--vault" => o.vault = Some(val()?),
             "--ram-only" => o.vault = None,
             "--no-boot" => o.boot = false,
+            "--help" | "-h" => {
+                println!("{USAGE}");
+                std::process::exit(0);
+            }
             _ => return Err(USAGE.into()),
         }
     }
@@ -197,22 +228,27 @@ async fn run(opts: Opts, hard: harden::Hardening) -> std::io::Result<bool> {
     }
     engine.persist(&app);
     let me = app.masks[app.active_mask].who.name();
-    app.notice(0, format!("I am {me}. generated here, known nowhere."));
+    app.notice(
+        0,
+        format!(
+            "Active mask: {me}. Masks are created on this device and are not registered anywhere."
+        ),
+    );
     for w in &opts.warnings {
         app.warn(0, w.clone());
     }
     if opts.relays.is_empty() {
         app.notice(
             0,
-            "no relays given: I can speak to nobody. start with --relay <onion>:<port>.",
+            "No relay is configured, so messages cannot be sent or received. Start eigen with --relay x.onion:PORT, --relay x.b32.i2p or --relay IP:PORT#KEY.",
         );
     }
     if app.vault {
-        app.notice(0, "my vault is open: masks, pins and /keep'd unions persist. never messages. /burn destroys it.");
+        app.notice(0, "The vault is open. It stores your masks, known contact keys, the keys you marked as verified with /trust and the unions saved with /keep. Messages are never stored. /burn deletes the vault.");
     } else {
         app.notice(
             0,
-            "nothing is written to disk. /help for what is mine to do.",
+            "Nothing is written to disk. Type /help for a list of commands.",
         );
     }
 
@@ -285,7 +321,7 @@ async fn run(opts: Opts, hard: harden::Hardening) -> std::io::Result<bool> {
         for a in std::mem::take(&mut app.outbox) {
             match a {
                 Action::Burn => {
-                    // Wipe first, animate after: the burn is already done when the screen decays.
+                    // All data is wiped before the burn animation starts.
                     engine.burn();
                     app.wipe();
                     if CLIP_USED.load(Ordering::Relaxed) {
@@ -347,19 +383,22 @@ fn open_or_create(
     path: &str,
 ) -> Result<(eigen_core::vault::Vault, eigen_core::vault::VaultData), String> {
     use eigen_core::vault::{Vault, VaultData};
-    let io = |_| "aborted.".to_string();
+    let io = |_| "Cancelled.".to_string();
     if std::path::Path::new(path).exists() {
-        let pass = read_secret("passphrase: ").map_err(io)?;
-        return Vault::open(path, &pass).map_err(|_| "does not open.".to_string());
+        let pass = read_secret("Passphrase: ").map_err(io)?;
+        return Vault::open(path, &pass).map_err(|_| {
+            "The vault could not be opened. The passphrase is wrong or the file is damaged."
+                .to_string()
+        });
     }
-    println!("no vault at {path}. making one: a single file, indistinguishable from random bytes.");
-    let p1 = read_secret("new passphrase: ").map_err(io)?;
-    let p2 = read_secret("again: ").map_err(io)?;
+    println!("No vault exists at {path}. A new vault will be created. It is a single encrypted file that cannot be distinguished from random data.");
+    let p1 = read_secret("New passphrase: ").map_err(io)?;
+    let p2 = read_secret("Repeat the passphrase: ").map_err(io)?;
     if *p1 != *p2 || p1.is_empty() {
-        return Err("passphrases differ (or are empty). nothing written.".into());
+        return Err("The passphrases do not match or are empty. No vault was created.".into());
     }
-    println!("a duress passphrase opens a decoy instead (one fresh mask). it can also silently wipe the real vault.");
-    let d = read_secret("duress passphrase (empty for none): ").map_err(io)?;
+    println!("You can set a duress passphrase. Entering it opens a decoy vault that contains one new mask. It can also erase the real vault without any visible sign.");
+    let d = read_secret("Duress passphrase (leave empty for none): ").map_err(io)?;
     let real = VaultData {
         masks: vec![Mask::generate().to_bytes()],
         ..Default::default()
@@ -368,10 +407,12 @@ fn open_or_create(
         Vault::create(path, &p1, &real, None)
     } else {
         if *d == *p1 {
-            return Err("the duress passphrase must differ. nothing written.".into());
+            return Err("The duress passphrase must be different from the passphrase. No vault was created.".into());
         }
         let mode =
-            read_secret("on duress: [d]ecoy only, or [w]ipe the real vault? ").map_err(io)?;
+            read_secret(
+                "When the duress passphrase is used: [d] open the decoy only, or [w] open the decoy and erase the real vault. Enter d or w: ",
+            ).map_err(io)?;
         let decoy = VaultData {
             masks: vec![Mask::generate().to_bytes()],
             wipe_other: mode.trim() == "w",
@@ -379,6 +420,6 @@ fn open_or_create(
         };
         Vault::create(path, &p1, &real, Some((&d, &decoy)))
     }
-    .map_err(|_| "could not write the vault.".to_string())?;
+    .map_err(|_| "The vault could not be written.".to_string())?;
     Ok((v, real))
 }

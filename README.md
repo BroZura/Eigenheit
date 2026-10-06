@@ -1,119 +1,180 @@
-# EIGENHEIT
+```
+'||''''|                             '||                   ||
+ ||   .   ''                          ||             ''    ||
+ ||'''|   ||  .|''|, .|''|, `||''|,   ||''|, .|''|,  ||  ''||''
+ ||       ||  ||  || ||..||  ||  ||   ||  || ||..||  ||    ||
+.||....| .||. `|..|| `|...  .||  ||. .||  || `|...  .||.   `|..'
+                  ||
+               `..|'
+```
 
-**Mine. Not yours. Not theirs.**
+“My power is my property. My power gives me property. My power am I myself, and through it am I my property.”
 
-`eigen` is an IRC-style terminal chat (DMs and rooms) built on one idea taken from Max Stirner: *what is mine is whatever I have power over* — my identity, my keys, my words, my exits. Nobody grants them, so nobody can revoke them.
+EIGENHEIT (`eigen`) is a terminal chat program for direct messages and group conversations. A group conversation is called a union.
 
-- **No accounts.** I am my key. My name (`amber-fox-3f9a`) and glyph are derived from it; nobody can choose, reserve or take a name. Masks (identities) are free and unlinkable to each other.
-- **No authority.** A room is a *union*: defined by a secret, held together by agreement, and dissolving by default. No admins, no kicks, no topics. A drop vote only rotates keys.
-- **No memory unless I choose it.** RAM-only by default. No history, no read receipts, no typing indicators, no presence. Messages disappear (default 1 h).
-- **No server that knows anything.** Relays store fixed-size ciphertext under opaque, rotating mailbox ids, for at most 24 h, in RAM, and log nothing.
-- **Exit is one keystroke.** `/leave` is instant. `/burn` (or `Ctrl-X Ctrl-X Ctrl-X`) destroys all local state and exits.
+- **Identities.** An identity is a set of keys created on your device. There are no accounts. Your name (for example `amber-fox-3f9a`) and glyph are derived from your public key. An identity is called a mask. You can create several masks. Masks share no keys and use separate network connections.
+- **Encryption.** All messages are end-to-end encrypted.
+- **Unions.** A union is defined by a shared secret. It has no administrators. A union ends after a set term unless its members renew it. The status bar shows the time left as `Union ends in HH:MM:SS`. Members can vote to remove a member, which replaces the keys.
+- **Cards and invites.** A contact card is a line of text that lets another person contact one of your masks. An invite is a line of text that lets another person join a union. It contains the union's secret, so share it only with people you trust.
+- **Storage.** By default, all data is kept in RAM only. Nothing is written to disk. There is no message history, no read receipts, no typing indicator and no online status. Messages expire after one hour by default.
+- **Relays.** A relay is a server that passes messages between clients. Relays store only encrypted messages of a fixed size, under mailbox IDs that change regularly. By default, they keep data in RAM for at most 24 hours (`eigen-relay --max-ttl`), and they keep no logs.
+- **Leaving.** `/leave` leaves a conversation immediately. `/burn` (or `Ctrl-X` three times within 1.5 seconds) deletes all local data and exits.
 
-> **This is unaudited software.** Read [SECURITY.md](SECURITY.md) and [THREATMODEL.md](THREATMODEL.md) before relying on it for anything.
+> **Warning:** This software has not been audited. Read [SECURITY.md](SECURITY.md) and [THREATMODEL.md](THREATMODEL.md) before you rely on it.
 
 ```
-I am ◍ velvet-scythe-839f · mask 1/1 · tor ● · cover ON · union ends 23:59:51
-masks                │ ⬡ union dim-garnet-0177
-▸◍ velvet-scythe-839f│ ─ ⊘ old-toad-8a8a entered the union.
-                     │ ⊘ old-toad-8a8a │ no names here, only keys.
-unions               │ ◍ velvet-scythe-839f │ one union, no owner
-▸⬡ union dim-ga… 23:59│
+◣ bronze-robin-7380 · Mask 1/2 · Tor ● · Union ends in 03:41:12 · RAM only
+Masks                │ ⬡ Union ochre-heron-1c7d
+▸◣ bronze-robin-7380 │ ─ ⬡ dawn-buoy-3e8f joined the union.
+ □ third-well-5aaf   │ ⬡ dawn-buoy-3e8f │ Hello.
+                     │ ◣ bronze-robin-7380 │ The meeting is moved to 18:00.
+Unions               │                     │ Please confirm that you can attend.
+▸⬡ Union ochr… 03:41 │ ◊ heavy-marsh-a505 │ Confirmed.
+                     │
+Direct messages      │
+ ◊ heavy-marsh-a505  │
+                     │
+ ◌ Home              │
+                     │──────────────────────────────────────────────────────────
+
+› See you then.
 ```
 
 ## Build
 
-Rust stable (1.80+). No C dependencies.
+Requires Rust stable 1.88 or later. There are no C dependencies.
 
 ```sh
 cargo build --release --locked
-# binaries: target/release/eigen, target/release/eigen-relay
+# Binaries: target/release/eigen, target/release/eigen-relay
 ```
+
+For reproducible builds, see [docs/BUILD.md](docs/BUILD.md).
 
 ## Run
 
-EIGENHEIT reaches relays in three ways, alone or mixed:
+EIGENHEIT connects to relays through Tor, I2P or a VPN (WireGuard) interface. You can use one or more of these at the same time.
 
-| relay address | route | needs |
+| Relay address | Connection | Requirements |
 |---|---|---|
-| `x.onion:7777` | Tor; one circuit per mask/DM/union | local `tor` (SOCKS `9050`; control `9051` with `CookieAuthentication 1` to host) |
-| `x.b32.i2p` | I2P; one transient destination per mask/DM/union | local i2pd or Java I2P with the SAM bridge on `7656` |
-| `IP:PORT#KEY` | direct, Noise-encrypted, bound to a VPN/WireGuard interface | `--vpn wg0` (or `--wireguard wg0`) |
+| `x.onion:7777` | Tor. Each mask, direct message and union uses a separate circuit. | A local `tor` daemon with the SOCKS port on `9050`. To host a relay, also the control port on `9051` with `CookieAuthentication 1`. |
+| `x.b32.i2p` | I2P. Each mask, direct message and union uses a separate destination. | A local I2P router (i2pd or Java I2P) with the SAM bridge on `7656`. |
+| `IP:PORT#KEY` | Direct connection, encrypted with Noise and bound to a VPN or WireGuard interface. | `--vpn wg0` (or `--wireguard wg0`). |
 
-Anything else (plain clear-net, or a direct relay without tunnel or key) is refused unless `--i-accept-the-risk`.
+Other relay addresses are refused: a direct relay without `--vpn`, and a direct relay without `#KEY`. The option `--i-accept-the-risk` allows them. Use this option for development only. With `--vpn`, a direct relay must be given as an IP address. A host name is always refused, because resolving it would send a DNS query outside the tunnel. The interface given with `--vpn` must exist.
 
 ```sh
-# Host a relay; every address is ephemeral and dies with the process:
-eigen-relay --onion                     # → eigen-relay at abcd…xyz.onion:7777
-eigen-relay --i2p                       # → eigen-relay at efgh…uvw.b32.i2p
-eigen-relay --public 10.8.0.1:7778      # → eigen-relay at 10.8.0.1:7778#KEY  (on the WireGuard address)
-eigen-relay --onion --i2p --public 10.8.0.1:7778   # all at once, one store
+# Host a relay. Each address is new at every start and stops working when the relay exits.
+eigen-relay --onion                     # Prints the onion address: eigen-relay at abcd…xyz.onion:7777
+eigen-relay --i2p                       # Prints the I2P address: eigen-relay at efgh…uvw.b32.i2p
+eigen-relay --public 10.8.0.1:7778      # Prints the address for clients: eigen-relay at 10.8.0.1:7778#KEY (encrypted; …)
+eigen-relay --onion --i2p --public 10.8.0.1:7778   # All three addresses, one message store
 
-# Chat through it:
+# Connect to a relay.
 eigen --relay abcd…xyz.onion:7777
-eigen --relay abcd…xyz.onion:7777 --cover          # constant-rate cover traffic
-eigen --relay abcd…xyz.onion:7777 --vault ~/.x     # opt-in encrypted vault
-eigen --relay efgh…uvw.b32.i2p                      # through I2P
-eigen --wireguard wg0 --relay 10.8.0.1:7778#KEY     # through my WireGuard tunnel (fails closed)
+eigen --relay abcd…xyz.onion:7777 --cover          # Send cover traffic
+eigen --relay abcd…xyz.onion:7777 --vault ~/.x     # Use an encrypted vault file
+eigen --relay efgh…uvw.b32.i2p                      # Connect through I2P
+eigen --wireguard wg0 --relay 10.8.0.1:7778#KEY     # Connect through wg0. Fails if wg0 is not available.
 ```
 
-Several `--relay` flags fan out to several relays (over different networks if I like); relays are interchangeable and untrusted.
+- **Cover traffic** (`--cover`): data sent on each connection to a relay at a constant rate. When there is no message to send, padding is sent, so an observer of the connection cannot tell when you send messages.
+- **Vault** (`--vault PATH`): an encrypted file that stores your masks, known contact keys, the keys you marked as verified with `/trust`, and unions saved with `/keep`. Messages are never stored.
+- `--relay` can be given more than once to use several relays, also on different networks. Relays are interchangeable and are not trusted.
+- A VPN hides your IP address from the relay. The VPN provider can see your IP address and that you connect to the relay. See [THREATMODEL.md](THREATMODEL.md).
 
-A VPN hides my IP from the relay; it does not make me anonymous to the VPN provider. Prefer Tor or I2P; see [THREATMODEL.md](THREATMODEL.md).
+Run `eigen --help` and `eigen-relay --help` for all options.
 
-### Local development (two terminals, no Tor)
+### Local development
+
+This setup uses two terminals and no Tor.
 
 ```sh
 eigen-relay --listen 127.0.0.1:7777
-eigen --relay 127.0.0.1:7777 --i-accept-the-risk     # terminal 1
-eigen --relay 127.0.0.1:7777 --i-accept-the-risk     # terminal 2
+eigen --relay 127.0.0.1:7777 --i-accept-the-risk     # Terminal 1
+eigen --relay 127.0.0.1:7777 --i-accept-the-risk     # Terminal 2
 ```
-Clear-net is refused without that flag: my network would see which mailboxes I touch and when. The status bar then reads `CLEAR-NET`.
 
-**A walk through:** in terminal 1 `/card` prints my card; in terminal 2 `/dm <card>` opens a forward-secret DM; `/verify` on both sides shows the same SAS. In terminal 1 `/union` prints an invite; in terminal 2 `/join <invite>`. `/ttl 2m` shortens my term; `/renew` before the end to stay; without it the union dissolves. `/drop <name>` votes keys away from someone. `/burn` everything. Then check: `eigen-relay --self-test` proves the relay writes and prints nothing.
+Without a tunnel, your network can see which mailboxes you use and when. For this reason, unencrypted connections require `--i-accept-the-risk`. The status bar then shows `Direct (unencrypted)`.
+
+**Example session:**
+
+1. In terminal 1, run `/card`. Your contact card is shown on a clean screen. Press `C` to copy it and `Esc` to close the screen.
+2. In terminal 2, run `/dm <card>` with the copied card. This opens a direct message with forward secrecy.
+3. Run `/verify` on both sides. Both sides must show the same SAS (short authentication string).
+4. In terminal 1, run `/union`. The invite is shown in the union view. Run `/invite` to show it on a clean screen and press `C` to copy it, or run `/copy invite`. In terminal 2, run `/join <invite>`.
+5. Run `/ttl 2m` to set your term in the union to two minutes. Run `/renew` before the term ends to stay. If you do not renew, you leave the union when the term ends. The union continues for members who renewed.
+6. Run `/drop <name>` to vote to remove a member.
+7. Run `/burn` to delete all data and exit.
+8. Run `eigen-relay --self-test`. It starts a test relay, sends traffic to it and checks that the relay prints nothing after start-up. On Linux, it also checks that the relay writes nothing to disk and has no files open.
 
 ## Commands
 
-| | |
+| Command | Description |
 |---|---|
-| `/mask`, `/masks [n]` | new mask; list or wear mask n |
-| `/card` | my contact card (whoever holds it can reach this mask) |
-| `/dm <card>` | open a DM |
-| `/union [passphrase]` | form a union (random secret → invite), or by passphrase |
-| `/join <invite\|passphrase>` | enter a union |
-| `/leave` | leave this union or DM, instantly |
-| `/verify [name]` | fingerprint, PGP fingerprint, identicon, SAS |
-| `/ttl <30m\|1h\|2d>` | how long my words live (DM) / my term length (union) |
-| `/renew` | I stay for the next term |
-| `/drop <name>` | vote to rotate keys away from someone (majority of the others) |
-| `/mute <name>` | hide someone on my screen |
-| `/me <action>`, `/once <words>`, `/unsay` | an action; words that vanish 30 s after being read; take back my last words |
-| `/who`, `/invite` | who is in this union (as far as I can see); its current invite |
-| `/trust [name]` | mark a key ✓ after comparing the SAS |
-| `/veil [2m\|off]` | hide names and words now (Ctrl-V) or after idle (default 5 min) |
-| `/lock <passphrase>` | lock the screen; 5 wrong tries burn everything |
-| `/deadman <30m\|off>` | burn everything if I am idle that long |
-| `/cover on\|off` | cover traffic |
-| `/keep` | remember this union in my vault |
-| `/export [path]`, `/import <path\|card>` | PGP public key out; pin a PGP key or card |
-| `/burn` | destroy everything, exit |
+| `/mask` | Create a new mask. |
+| `/masks [n]` | List your masks, or switch to mask n. |
+| `/card` | Show the contact card of the active mask on a clean screen. Anyone with the card can contact this mask. Press `C` to copy it and `Esc` to close. |
+| `/copy [card\|invite]` | Copy your contact card or the union invite to the clipboard. |
+| `/dm <card>` | Open a direct message using a contact card. |
+| `/union [passphrase]` | Create a union with a random secret and show its invite, or create a union from a passphrase. |
+| `/join <invite\|passphrase>` | Join a union with an invite or passphrase. |
+| `/invite` | Show this union's invite on a clean screen. Press `C` to copy it and `Esc` to close. |
+| `/leave` | Leave this union or direct message immediately. |
+| `/verify [name]` | Show the fingerprint, PGP fingerprint, identicon and SAS to compare with your contact. |
+| `/trust [name]` | Mark a key as verified (✓) after you have compared the SAS. Run it again to remove the mark. |
+| `/ttl <30m\|1h\|2d>` | In a direct message, set how long your messages are kept. In a union, set your term length. This also limits how long messages are kept on your screen and how long your messages are kept on relays. |
+| `/renew` | Stay in this union for its next term. |
+| `/drop <name>` | Vote to remove a member. The member is removed and the keys are replaced when more than half of the members, not counting that member, have voted. |
+| `/who` | List the union members visible to you. |
+| `/mute <name>` | Hide someone's messages on your screen only. |
+| `/me <action>` | Send a message that describes an action. |
+| `/once <words>` | Send a message that is removed 30 seconds after it is read. |
+| `/unsay` | Take back your last message. |
+| `/veil [2m\|off]` | Hide the screen now (`Ctrl-V`), or after a time without input. The default is 5 minutes. If the terminal is wide enough, the status bar shows `Screen hidden`. |
+| `/lock [passphrase]` | Lock the screen. A passphrase is required the first time. Five wrong attempts delete all data. |
+| `/deadman <30m\|off>` | Delete all data and exit after this long without input (auto-burn). If the terminal is wide enough, the status bar shows the time left as `Auto-burn in HH:MM:SS`. |
+| `/cover on\|off` | Turn cover traffic on or off. |
+| `/keep` | Save this union in the vault, or remove it from the vault. |
+| `/export [path]` | Show your PGP public key, or save it to a file. |
+| `/import <path\|card>` | Import a key from a PGP key file or a contact card. `/verify` and `/trust` can then find the key by its name. |
+| `/burn` | Delete all data and exit. |
+| `/help` | Show the list of commands (`F1`). |
 
-Keys: `Tab`/`Shift-Tab` (or `Ctrl-N`/`Ctrl-P`) switch, `PgUp`/`PgDn` scroll, `Ctrl-U` new union, `Ctrl-M` new mask (only where the terminal distinguishes it from Enter), `Ctrl-L` redraw, `Ctrl-V` veil, `Up`/`Down` my earlier lines (RAM only), `F1` help, `Ctrl-X ×3` panic burn, `Ctrl-C` quit. Works at 80×24, honours `NO_COLOR`.
+**Copying.** `/card` and `/invite` show the text on a clean screen, where you can also select it with the mouse. A contact card is 97 characters long. In a terminal narrower than 97 columns, it is split across lines, and a mouse selection may then contain line breaks. Press `C` to copy the text without line breaks. `C` and `/copy` use the terminal clipboard (OSC 52). Inside tmux, the text is passed through to the outer terminal. In tmux 3.3 or later, this requires `set -g allow-passthrough on`. The clipboard is cleared after 30 seconds, on `/burn` and when EIGENHEIT exits normally.
 
-## How it works (short)
+## Keys
 
-- **DMs:** X3DH with signed prekeys and one-time prekeys held (encrypted) at relays → Double Ratchet. Sealed sender: the first message encrypts my identity to the recipient's prekey. Receive mailboxes rotate with each ratchet step.
-- **Unions:** the secret derives hourly mailbox ids and a control key; content uses per-participant sender-key chains, signed by each mask. Whenever anyone leaves or is dropped, sender keys rotate *and* the union takes a new secret, so those gone cannot even watch the mailboxes.
-- **Wire:** every frame is exactly 1024 bytes; every stored blob exactly 960 bytes; one response per request. Hashcash PoW on every write.
-- Details: [docs/PROTOCOL.md](docs/PROTOCOL.md), choices and their costs: [docs/DECISIONS.md](docs/DECISIONS.md), builds: [docs/BUILD.md](docs/BUILD.md).
+| Key | Action |
+|---|---|
+| `Tab` / `Shift-Tab` (or `Ctrl-N` / `Ctrl-P`) | Go to the next or previous conversation. |
+| `PgUp` / `PgDn` | Scroll up or down. |
+| `Up` / `Down` | Show earlier input. It is kept in RAM only. |
+| `Ctrl-U` | Create a new union. |
+| `Ctrl-M` | Create a new mask. This works only in terminals that distinguish `Ctrl-M` from `Enter`. |
+| `Ctrl-V` | Hide the screen. |
+| `Ctrl-L` | Redraw the screen. |
+| `F1` | Show help. |
+| `Ctrl-X` three times within 1.5 seconds | Delete all data and exit. |
+| `Ctrl-C` or `Ctrl-D` | Quit. The commands `/quit` and `/exit` do the same. |
+
+The interface works in terminals of 80×24 characters or larger. If the status bar does not fit in one line, the items with the lowest priority are hidden. The mask name, the union countdown, the mask number and the connection have the highest priority. In a small terminal, the command list (`/help`) scrolls with `Up` and `Down`. Set `NO_COLOR` to turn off colors.
+
+## How it works
+
+- **Direct messages:** X3DH key agreement with signed prekeys and one-time prekeys, followed by the Double Ratchet. One-time prekeys are stored encrypted at relays. The first message encrypts the sender's identity to the recipient's signed prekey (sealed sender). Receive mailboxes change with each ratchet step.
+- **Unions:** The union secret derives the mailbox IDs, which change every hour, and a control key. Each member encrypts messages with a separate sender-key chain and signs them with their mask. When a member leaves or is removed, all sender keys are replaced and the union gets a new secret. Former members can no longer find the mailboxes.
+- **Wire format:** Every cell sent between client and relay is exactly 1024 bytes. Over a Noise link, each cell is sent as a 1040-byte frame. Every stored blob is exactly 960 bytes. Each request receives exactly one response. Every write requires a hashcash proof of work.
+- **Further documents:** protocol in [docs/PROTOCOL.md](docs/PROTOCOL.md), design decisions in [docs/DECISIONS.md](docs/DECISIONS.md), reproducible builds in [docs/BUILD.md](docs/BUILD.md).
 
 ## Layout
 
 ```
-eigen-core   crypto + protocol (identity, x3dh, ratchet, dm, union, cell, pow, vault, pgp)
-eigen-transport  Noise relay link, I2P SAM, interface-bound (VPN) dialing
-eigen-relay  RAM-only relay (+ --onion, --i2p, --public, --self-test)
-eigen-tui    client: engine, links, tor SOCKS, ratatui UI; binary `eigen`
+eigen-core       Cryptography and protocol: identity, X3DH, ratchet, direct messages,
+                 unions, cells, proof of work, vault, PGP
+eigen-transport  Noise relay connection, I2P SAM, connections bound to a VPN interface
+eigen-relay      Relay that keeps all data in RAM (--onion, --i2p, --public, --self-test)
+eigen-tui        Client: engine, connections, Tor SOCKS, terminal interface; binary `eigen`
 ```
 
 License: AGPL-3.0-or-later.

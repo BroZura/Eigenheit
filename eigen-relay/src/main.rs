@@ -1,4 +1,6 @@
 #![forbid(unsafe_code)]
+//! The EIGENHEIT relay server.
+//!
 //! eigen-relay [--listen ADDR] [--onion] [--control ADDR] [--tor-password PW]
 //!             [--i2p] [--sam ADDR] [--public ADDR]
 //!             [--pow-base N] [--max-ttl SECS] [--quiet] [--self-test]
@@ -12,20 +14,51 @@ use eigen_relay::{torctl, Config, Relay};
 use eigen_transport::noise::RelayKey;
 
 fn usage() -> ! {
-    // Usage goes to stdout only when asked for; exit code says the rest.
-    println!("eigen-relay [--listen 127.0.0.1:7777] [--onion] [--control 127.0.0.1:9051] [--tor-password PW]
-            [--i2p] [--sam 127.0.0.1:7656] [--public 0.0.0.0:7778]
-            [--pow-base 12] [--max-ttl 86400] [--quiet] [--self-test]
+    usage_exit(2)
+}
 
-  --listen  plain cells on loopback (behind tor / for development)
-  --onion   publish --listen as an ephemeral tor onion service
-  --i2p     publish an ephemeral I2P destination via the SAM bridge
-  --public  Noise-encrypted listener for clients on VPN/WireGuard; prints HOST:PORT#KEY");
-    std::process::exit(2)
+fn usage_exit(code: i32) -> ! {
+    // Prints the usage text and exits with code 2.
+    println!(
+        "Usage: eigen-relay [--listen ADDR] [--onion] [--control ADDR] [--tor-password PW]
+                   [--i2p] [--sam ADDR] [--public ADDR]
+                   [--pow-base N] [--max-ttl SECS] [--quiet] [--self-test]
+
+Options:
+  --listen ADDR      Address for unencrypted connections. Use it only on a
+                     loopback address behind a Tor onion service, or for
+                     development. Default: 127.0.0.1:7777.
+  --onion            Publish the --listen address as a Tor onion service.
+                     The onion address is new at every start and stops
+                     working when the relay exits.
+  --control ADDR     Address of the Tor control port. Default: 127.0.0.1:9051.
+  --tor-password PW  Password for the Tor control port. If it is not given,
+                     cookie authentication is used. If Tor requires no
+                     authentication, none is used.
+  --i2p              Publish an I2P destination through the SAM bridge. The
+                     I2P address is new at every start and stops working
+                     when the relay exits.
+  --sam ADDR         Address of the I2P SAM bridge. Default: 127.0.0.1:7656.
+  --public ADDR      Address for Noise-encrypted connections from clients on
+                     a VPN or WireGuard network. The relay prints the address
+                     for clients in the form IP:PORT#KEY. The key is new at
+                     every start.
+  --pow-base N       Base proof-of-work difficulty, in bits. Default: 12.
+  --max-ttl SECS     Maximum time that a message is stored, in seconds.
+                     Default: 86400.
+  --quiet            Do not print the relay addresses at start-up.
+  --self-test        Start a test relay, send traffic to it and check that
+                     it prints nothing after start-up. On Linux, also check
+                     that it writes nothing to disk and has no open files.
+                     Then exit.
+
+All data is kept in RAM only. Nothing is written to disk."
+    );
+    std::process::exit(code)
 }
 
 fn main() {
-    // A panic message could carry identifiers. Say nothing.
+    // Panic messages could contain identifying data, so they are suppressed.
     std::panic::set_hook(Box::new(|_| {}));
     let mut listen = "127.0.0.1:7777".to_string();
     let mut control = "127.0.0.1:9051".to_string();
@@ -49,6 +82,7 @@ fn main() {
             "--pow-base" => cfg.pow_base = val().parse().unwrap_or_else(|_| usage()),
             "--max-ttl" => cfg.max_ttl = val().parse().unwrap_or_else(|_| usage()),
             "--self-test" => std::process::exit(self_test()),
+            "--help" | "-h" => usage_exit(0),
             _ => usage(),
         }
     }
@@ -65,9 +99,10 @@ fn main() {
         };
         let relay = Relay::start(cfg);
         if !onion && !quiet {
-            println!("eigen-relay at {local} (plain cells: behind tor, or development only)");
+            println!("eigen-relay at {local} (unencrypted, for use behind Tor or for development only)");
         }
-        // Keep the control connection alive: the onion service dies with it.
+        // Tor removes the onion service when the control connection closes,
+        // so the connection is kept open.
         let _ctl = if onion {
             match torctl::add_onion(&control, password.as_deref(), local.port()).await {
                 Ok((addr, ctl)) => {
@@ -77,14 +112,14 @@ fn main() {
                     Some(ctl)
                 }
                 Err(_) => {
-                    println!("tor control port refused the onion service");
+                    println!("Could not create the onion service through the Tor control port at {control}.");
                     std::process::exit(1)
                 }
             }
         } else {
             None
         };
-        // I2P: a transient destination, forgotten by the router when I exit.
+        // I2P uses a transient destination. The router removes it when the relay exits.
         if i2p {
             match eigen_transport::sam::Session::create(&sam).await {
                 Ok(sess) => {
@@ -95,20 +130,21 @@ fn main() {
                     tokio::spawn(relay.clone().serve_i2p(std::sync::Arc::new(sess)));
                 }
                 Err(_) => {
-                    println!("no i2p session from the SAM bridge at {sam} (router down, or it could not build tunnels)");
+                    println!("Could not create an I2P session through the SAM bridge at {sam}. Check that the I2P router is running and can build tunnels.");
                     std::process::exit(1)
                 }
             }
         }
-        // Public listener for VPN/WireGuard clients: Noise-encrypted, ephemeral key.
+        // Public listener for VPN and WireGuard clients. Connections use Noise
+        // encryption with a key that is new at every start.
         if let Some(addr) = &public {
             let (Ok(key), Ok(pl)) = (RelayKey::generate(), tokio::net::TcpListener::bind(addr).await) else {
-                println!("cannot listen on {addr}");
+                println!("Could not listen on {addr}.");
                 std::process::exit(1)
             };
             if !quiet {
                 let at = pl.local_addr().map(|a| a.to_string()).unwrap_or_default();
-                println!("eigen-relay at {at}#{} (noise; use the address clients can reach)", key.encoded());
+                println!("eigen-relay at {at}#{} (encrypted; clients must use an address of this host that they can reach)", key.encoded());
             }
             tokio::spawn(relay.clone().serve_noise(pl, std::sync::Arc::new(key)));
         }
@@ -117,8 +153,9 @@ fn main() {
     });
 }
 
-/// Prove that serving traffic produces no output and no file writes.
-/// Spawns the relay as a child process, drives traffic, inspects the child.
+/// Checks that serving traffic produces no output and no disk writes.
+/// Starts the relay as a child process, sends traffic to it and inspects the
+/// child process.
 fn self_test() -> i32 {
     let Ok(exe) = std::env::current_exe() else {
         return 1;
@@ -150,12 +187,12 @@ fn self_test() -> i32 {
     let noise_at = second.split_whitespace().nth(2).unwrap_or("").to_string();
     let mut fails: Vec<String> = Vec::new();
     match drive(&addr) {
-        Ok(n) => println!("self-test: {n} plain cells exchanged"),
-        Err(e) => fails.push(format!("traffic failed: {e}")),
+        Ok(n) => println!("Self-test: {n} unencrypted cells exchanged."),
+        Err(e) => fails.push(format!("unencrypted traffic error: {e}")),
     }
     match drive_noise(&noise_at) {
-        Ok(n) => println!("self-test: {n} noise frames exchanged"),
-        Err(e) => fails.push(format!("noise traffic failed: {e}")),
+        Ok(n) => println!("Self-test: {n} encrypted frames exchanged."),
+        Err(e) => fails.push(format!("encrypted traffic error: {e}")),
     }
     std::thread::sleep(Duration::from_millis(300));
     #[cfg(target_os = "linux")]
@@ -168,7 +205,7 @@ fn self_test() -> i32 {
                 .trim()
                 .to_string();
             if wb != "0" {
-                fails.push(format!("child wrote {wb} bytes to storage"));
+                fails.push(format!("the relay wrote {wb} bytes to disk"));
             }
         }
         if let Ok(rd) = std::fs::read_dir(format!("/proc/{pid}/fd")) {
@@ -181,7 +218,7 @@ fn self_test() -> i32 {
                     || t.starts_with("anon_inode:")
                     || t.starts_with("/dev/");
                 if !ok {
-                    fails.push(format!("child holds file {t}"));
+                    fails.push(format!("the relay has the file {t} open"));
                 }
             }
         }
@@ -196,16 +233,16 @@ fn self_test() -> i32 {
     }
     if !rest.is_empty() || !err.is_empty() {
         fails.push(format!(
-            "child printed {} bytes after startup",
+            "the relay printed {} bytes after start-up",
             rest.len() + err.len()
         ));
     }
     if fails.is_empty() {
-        println!("self-test: no log lines, no disk writes, no files held — PASS");
+        println!("Self-test PASS: the relay printed nothing, wrote nothing to disk and had no files open while serving.");
         0
     } else {
         for f in fails {
-            println!("self-test FAIL: {f}");
+            println!("Self-test FAIL: {f}.");
         }
         1
     }
@@ -252,12 +289,12 @@ fn drive(addr: &str) -> std::io::Result<usize> {
                 nonce: nonce ^ 1,
                 blob,
             },
-        )?; // likely bad PoW
+        )?; // Probably fails the proof-of-work check.
         call(&mut s, Op::Fetch { mbox, after: 0 })?;
         call(&mut s, Op::Take { mbox })?;
         call(&mut s, Op::Pad)?;
     }
-    // Garbage cells must be answered, not logged.
+    // An invalid cell must receive a response and must not produce output.
     s.write_all(&[0xff; CELL])?;
     let mut r = [0u8; CELL];
     s.read_exact(&mut r)?;

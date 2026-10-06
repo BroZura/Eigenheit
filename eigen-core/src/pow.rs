@@ -27,7 +27,7 @@ pub fn leading_zeros(d: &[u8; 32]) -> u32 {
     n
 }
 
-/// The digest doubles as a replay tag at the relay.
+/// The relay also uses this digest as a replay tag.
 pub fn tag(hour: u64, mbox: &[u8; 32], blob: &[u8], nonce: u64) -> [u8; 32] {
     digest(hour, mbox, &h(&[blob]), nonce)
 }
@@ -40,7 +40,8 @@ pub fn check(hour: u64, mbox: &[u8; 32], blob: &[u8], nonce: u64, bits: u8) -> b
     work(hour, mbox, blob, nonce) >= bits as u32
 }
 
-/// Grind a nonce. Starts at a random point so parallel solvers don't collide.
+/// Search for a valid nonce. The search starts at a random value so that parallel
+/// solvers do not repeat the same work.
 pub fn solve(hour: u64, mbox: &[u8; 32], blob: &[u8], bits: u8) -> u64 {
     let bh = h(&[blob]);
     let mut nonce = crate::crypto::random_u64();

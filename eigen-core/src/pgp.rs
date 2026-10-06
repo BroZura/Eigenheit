@@ -1,6 +1,6 @@
 //! OpenPGP interop: export a mask's Ed25519 key as an armored v4 public key
 //! (EdDSA-legacy, RFC 4880bis) with a self-certification, and import such keys.
-//! Live sessions never use PGP: it has no forward secrecy.
+//! Live sessions do not use PGP because it has no forward secrecy.
 use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
@@ -10,7 +10,8 @@ use crate::wire::{hex, Writer};
 use crate::{Error, Result};
 
 const ED25519_OID: [u8; 9] = [0x2B, 0x06, 0x01, 0x04, 0x01, 0xDA, 0x47, 0x0F, 0x01];
-/// Constant creation time: a timestamp would be metadata. (2020-01-01T00:00:00Z)
+/// Fixed creation time (2020-01-01T00:00:00Z), so that the key does not reveal when it
+/// was created.
 const CREATED: u32 = 1_577_836_800;
 
 fn key_body(pk: &[u8; 32]) -> Vec<u8> {

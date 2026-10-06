@@ -1,4 +1,4 @@
-//! The client refuses clear-net relays without explicit consent.
+//! The client refuses unprotected relays unless --i-accept-the-risk is given.
 
 #[test]
 fn refuses_clear_net_without_consent() {
@@ -7,7 +7,7 @@ fn refuses_clear_net_without_consent() {
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&out.stdout).contains("refusing relay"));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("Relay 127.0.0.1:7777 refused."));
 }
 
 #[test]
@@ -17,7 +17,7 @@ fn unknown_flags_print_usage() {
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&out.stdout).contains("RAM-only"));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("RAM only"));
 }
 
 #[test]

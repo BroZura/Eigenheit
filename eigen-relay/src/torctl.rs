@@ -1,4 +1,4 @@
-//! Tor control port client: just enough to publish an ephemeral onion service.
+//! Minimal Tor control port client. It publishes a temporary onion service.
 use std::io;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -8,8 +8,9 @@ pub struct Control {
     _stream: BufReader<TcpStream>,
 }
 
-/// Authenticate and run `ADD_ONION NEW:ED25519-V3 Flags=DiscardPK`.
-/// The private key is discarded by tor: the address dies with this process.
+/// Authenticates and runs `ADD_ONION NEW:ED25519-V3 Flags=DiscardPK`.
+/// Tor discards the private key and removes the onion service when the returned
+/// control connection closes. The onion address cannot be used again.
 pub async fn add_onion(
     addr: &str,
     password: Option<&str>,
@@ -36,7 +37,7 @@ pub async fn add_onion(
                     .nth(1)
                     .and_then(|r| r.split('"').next())
             })
-            .ok_or_else(|| io::Error::other("no auth"))?;
+            .ok_or_else(|| io::Error::other("No supported authentication method"))?;
         let cookie = std::fs::read(path)?;
         format!("AUTHENTICATE {}", eigen_core::wire::hex(&cookie))
     };
@@ -49,7 +50,7 @@ pub async fn add_onion(
     let id = lines
         .iter()
         .find_map(|l| l.strip_prefix("250-ServiceID="))
-        .ok_or_else(|| io::Error::other("no service id"))?;
+        .ok_or_else(|| io::Error::other("Tor returned no service ID"))?;
     Ok((format!("{id}.onion"), Control { _stream: s }))
 }
 
@@ -66,7 +67,7 @@ async fn cmd(s: &mut BufReader<TcpStream>, line: &str) -> io::Result<Vec<String>
         let l = l.trim_end().to_string();
         let done = l.len() >= 4 && &l[3..4] == " ";
         if !l.starts_with("250") {
-            return Err(io::Error::other("refused"));
+            return Err(io::Error::other("The Tor control port refused the command"));
         }
         out.push(l);
         if done {

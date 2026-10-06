@@ -1,6 +1,6 @@
 //! Unions in the engine: roster, sender-key distribution, terms, renewal,
-//! drop votes and rekeying. No participant holds authority; each client applies
-//! the same rules.
+//! drop votes and rekeying. No member has special authority. Every client
+//! applies the same rules.
 use std::collections::{HashMap, HashSet};
 
 use eigen_core::cell::{Item, Mbox};
@@ -21,7 +21,8 @@ const HELLO_WINDOW: u64 = 30;
 const CTRL_TTL: u32 = 3600;
 /// How long old union keys keep being read after a rekey.
 const REKEY_GRACE: u64 = 300;
-/// If the expected rekeyer stays silent this long, anyone remaining rekeys.
+/// If the expected member does not rekey within this many seconds, any
+/// remaining member does.
 const REKEY_FALLBACK: u64 = 15;
 
 pub struct Member {
@@ -55,21 +56,23 @@ pub struct UnionState {
     pub renewed: bool,
     votes: HashMap<Who, HashSet<Who>>,
     dropped: HashSet<Who>,
-    /// Left this term: stale messages from them must not bring them back.
+    /// Members who left this term. Old messages from them must not add them again.
     gone: HashSet<Who>,
-    /// Messages that arrived before their sender's key (puts race on the relay).
+    /// Messages that arrived before their sender's key. This happens when
+    /// writes to the relay arrive out of order.
     held: Vec<(Who, u32, u32, Vec<u8>, u64)>,
     hello_until: u64,
-    /// When I entered: earlier JOINs are history, not arrivals.
+    /// When this client joined. JOINs sent before this time are ignored.
     joined_at: u64,
     hour: u64,
-    /// Rekey epoch and the hash of the secret I adopted for it (lowest hash wins).
+    /// Rekey epoch and the hash of the secret adopted for it. The lowest hash wins.
     pub epoch: u32,
     cand: [u8; 32],
     rekey_due: Option<u64>,
     /// Previous keys, still read until the grace period ends.
     old: Vec<(UnionKeys, u64)>,
-    /// The face the union had when I entered; stays stable across rekeys.
+    /// The union's name and glyph at the time this client joined. It does not
+    /// change on rekey.
     pub face: Who,
 }
 
@@ -131,7 +134,7 @@ fn watch_all(e: &mut Engine, vid: u64) {
     }
 }
 
-/// Give my current chain to every known participant who doesn't have it yet.
+/// Send the current sender chain to every known member who does not have it yet.
 fn sync_keys(e: &mut Engine, vid: u64) {
     let Some(u) = e.unions.get_mut(&vid) else {
         return;
@@ -160,10 +163,10 @@ fn rotate_chain(e: &mut Engine, vid: u64) {
     sync_keys(e, vid);
 }
 
-/// The roster shrank: new sender keys now, and a new union secret so those who
-/// left cannot even watch the mailboxes. The participant with the lowest key
-/// rekeys first (a deterministic convention, not a privilege); anyone else does
-/// if it stays silent.
+/// A member left or was removed. Rotate the sender chain now and issue a new
+/// union secret so former members cannot watch the mailboxes. The member with
+/// the lowest key sends the rekey. If that member does not send it within
+/// REKEY_FALLBACK seconds, any remaining member sends it.
 fn shrink(e: &mut Engine, vid: u64, app: &mut App) {
     rotate_chain(e, vid);
     let Some(me) = me(e, vid) else { return };
@@ -171,7 +174,7 @@ fn shrink(e: &mut Engine, vid: u64, app: &mut App) {
         return;
     };
     if u.members.is_empty() {
-        // Alone: a fresh secret still cuts off whoever left.
+        // No other members remain. A new secret still locks out former members.
         return issue_rekey(e, vid, app);
     }
     if u.members.keys().all(|w| me < *w) {
@@ -217,7 +220,7 @@ fn adopt(e: &mut Engine, vid: u64, secret: &[u8; 32], epoch: u32, app: Option<&m
     watch_all(e, vid);
     rotate_chain(e, vid);
     if let Some(app) = app {
-        app.notice(vid, "the union took a new secret. whoever left cannot follow, not even to count our words. old invites are void (/invite).");
+        app.notice(vid, "The union has a new secret. Members who left cannot read new messages or see when messages are sent. Old invites no longer work. Use /invite to show the new invite.");
     }
 }
 
@@ -233,7 +236,7 @@ fn start(e: &mut Engine, keys: UnionKeys, announce: bool, app: &mut App) {
     }
     let vid = app.fresh_id();
     let face = keys.face();
-    let mut view = View::new(vid, ViewKind::Union, format!("union {}", face.name()), mi);
+    let mut view = View::new(vid, ViewKind::Union, format!("Union {}", face.name()), mi);
     view.who = Some(face);
     let t = now();
     view.ends_at = Some(t + TERM);
@@ -272,13 +275,16 @@ fn start(e: &mut Engine, keys: UnionKeys, announce: bool, app: &mut App) {
     app.notice(
         vid,
         format!(
-            "I am here as {}. the union ends in {} unless I /renew.",
+            "Joined as {}. The union ends in {} at the latest. Use /renew to stay for the next term.",
             app.masks[mi].who.name(),
             fmt_duration(TERM)
         ),
     );
     if announce {
-        app.notice(vid, "announcing myself (proof of work)…");
+        app.notice(
+            vid,
+            "Sending a join message to the union. This requires a proof of work and can take a moment.",
+        );
         send(e, vid, Body::Join { mx, at: now() });
     }
 }
@@ -295,7 +301,7 @@ pub fn create(e: &mut Engine, passphrase: Option<String>, app: &mut App) {
             let invite = keys.invite();
             start(e, keys, false, app);
             let vid = app.view().id;
-            app.notice(vid, "a union of one. whoever holds this invite may enter — pass it only to those I choose:");
+            app.notice(vid, "Union created. Anyone who has the invite below can join. Share it only with people you trust. Use /copy invite to copy it.");
             app.notice(vid, invite);
         }
     }
@@ -305,12 +311,14 @@ pub fn join(e: &mut Engine, arg: &str, app: &mut App) {
     let keys = if arg.starts_with(INVITE_PREFIX) {
         UnionKeys::parse_invite(arg)
     } else {
-        app.here_notice("stretching the passphrase (argon2id, 64 MiB)…");
+        app.here_notice(
+            "Deriving the union secret from the passphrase. This can take a few seconds.",
+        );
         UnionKeys::from_passphrase(arg)
     };
     match keys {
         Ok(k) => start(e, k, true, app),
-        Err(_) => app.here_notice("that invite does not parse."),
+        Err(_) => app.here_notice("The invite is not valid. Check that it was copied completely."),
     }
 }
 
@@ -319,10 +327,10 @@ pub fn who(e: &mut Engine, vid: u64, app: &mut App) {
     let Some(u) = e.unions.get(&vid) else { return };
     let next = u.term + 1;
     let mut rows = vec![format!(
-        "{} {} (me){}",
+        "{} {} (you){}",
         me.glyph(),
         me.name(),
-        if u.renewed { " · stays" } else { "" }
+        if u.renewed { " · renewed" } else { "" }
     )];
     let mut others: Vec<(&Who, &Member)> = u.members.iter().collect();
     others.sort_by_key(|(w, _)| w.name());
@@ -333,12 +341,12 @@ pub fn who(e: &mut Engine, vid: u64, app: &mut App) {
             w.name(),
             if app.trusted.contains(w) { " ✓" } else { "" },
             if m.renewed_for >= next {
-                " · stays"
+                " · renewed"
             } else {
                 ""
             },
             if m.chain.is_none() {
-                " · no key from them yet"
+                " · key not received yet"
             } else {
                 ""
             },
@@ -346,10 +354,7 @@ pub fn who(e: &mut Engine, vid: u64, app: &mut App) {
     }
     app.notice(
         vid,
-        format!(
-            "{} here, as far as I can see (no one can see more):",
-            rows.len()
-        ),
+        format!("Members seen by your client ({}):", rows.len()),
     );
     for r in rows {
         app.notice(vid, format!("  {r}"));
@@ -365,7 +370,10 @@ pub fn say(e: &mut Engine, vid: u64, kind: u8, id: [u8; 8], text: String, app: &
         Ok(body) => {
             let ttl = u.msg_ttl as u64;
             if u.members.is_empty() && kind != crate::app::SAY_UNSAY {
-                app.notice(vid, "nobody else is here yet; I speak to the walls.");
+                app.notice(
+                    vid,
+                    "No other members are in this union yet, so no one receives this message.",
+                );
             }
             app.receive(vid, me, kind, id, text, ttl, true);
             send(e, vid, body);
@@ -390,13 +398,14 @@ fn dissolve(e: &mut Engine, vid: u64, app: &mut App, why: &str) {
         let name = u.face.name();
         e.active_ctx_drop(u.ctx);
         app.remove_view(vid);
-        app.notice(0, format!("union {name}: {why}"));
+        app.notice(0, format!("Union {name}: {why}"));
     }
 }
 
 pub fn leave(e: &mut Engine, vid: u64, _app: &mut App) {
     if e.unions.contains_key(&vid) {
-        // Tell the others so they rotate away from me; then forget everything.
+        // Notify the other members so they rotate their keys, then delete all
+        // local state for this union.
         send(e, vid, Body::Leave);
         if let Some(u) = e.unions.remove(&vid) {
             forget(e, &u);
@@ -410,7 +419,7 @@ pub fn renew(e: &mut Engine, vid: u64, app: &mut App) {
         return;
     };
     if u.renewed {
-        return app.notice(vid, "I already said I stay.");
+        return app.notice(vid, "You have already renewed for the next term.");
     }
     u.renewed = true;
     let term = u.term + 1;
@@ -420,7 +429,9 @@ pub fn renew(e: &mut Engine, vid: u64, app: &mut App) {
     }
     app.notice(
         vid,
-        format!("I stay for the next term. {others} other(s) have said the same so far."),
+        format!(
+            "You will stay for the next term. Other members who have renewed so far: {others}."
+        ),
     );
     send(e, vid, Body::Renew { term });
 }
@@ -437,7 +448,7 @@ pub fn member_named(e: &Engine, vid: u64, name: &str) -> Option<Who> {
 pub fn drop_vote(e: &mut Engine, vid: u64, name: &str, app: &mut App) {
     let Some(me) = me(e, vid) else { return };
     let Some(target) = member_named(e, vid, name) else {
-        return app.notice(vid, "nobody by that name is in this union.");
+        return app.notice(vid, "No member with that name is in this union.");
     };
     let Some(u) = e.unions.get_mut(&vid) else {
         return;
@@ -446,7 +457,7 @@ pub fn drop_vote(e: &mut Engine, vid: u64, name: &str, app: &mut App) {
     u.votes.entry(target).or_default().insert(me);
     app.notice(
         vid,
-        format!("I vote to rotate keys away from {name}. it takes a majority of the others."),
+        format!("You voted to remove {name}. {name} is removed when more than half of all members except {name} have voted for it."),
     );
     send(e, vid, Body::Drop { target, term });
     evaluate(e, vid, target, app);
@@ -473,7 +484,7 @@ fn evaluate(e: &mut Engine, vid: u64, target: Who, app: &mut App) {
             e,
             vid,
             app,
-            "the others rotated their keys away from me. I am no longer in it.",
+            "The other members voted to remove you. You are no longer a member.",
         );
     }
     u.members.remove(&target);
@@ -482,7 +493,7 @@ fn evaluate(e: &mut Engine, vid: u64, target: Who, app: &mut App) {
     app.notice(
         vid,
         format!(
-            "{votes} of {} agreed: keys rotate away from {}. not a punishment; just no longer us.",
+            "Votes to remove: {votes} of {}. {} was removed from the union.",
             electorate.len(),
             target.name()
         ),
@@ -515,7 +526,7 @@ pub fn on_blob(e: &mut Engine, vid: u64, mbox: &Mbox, it: &Item, app: &mut App) 
     if from == me {
         return;
     }
-    // Re-check the work myself; the relay's word is worth nothing.
+    // Verify the proof of work locally. The relay is not trusted.
     let need = u.keys.pow
         + if matches!(body, Body::Join { .. }) {
             JOIN_EXTRA
@@ -531,7 +542,7 @@ pub fn on_blob(e: &mut Engine, vid: u64, mbox: &Mbox, it: &Item, app: &mut App) 
     if u.gone.contains(&from) && !matches!(body, Body::Join { .. }) {
         return;
     }
-    // Joins through a void invite are not answered.
+    // JOINs sent with an outdated invite are not answered.
     if !current && matches!(body, Body::Join { .. }) {
         return;
     }
@@ -541,8 +552,8 @@ pub fn on_blob(e: &mut Engine, vid: u64, mbox: &Mbox, it: &Item, app: &mut App) 
     };
     match body {
         Body::Join { mx, at } => {
-            // Old JOINs still on the relay are history; answering them would tell a
-            // newcomer who was here before them.
+            // Ignore old JOINs still stored on the relay. Answering them would
+            // reveal earlier members to a newcomer.
             if at + e.join_skew < u.joined_at || at > now() + e.join_skew {
                 return;
             }
@@ -562,7 +573,7 @@ pub fn on_blob(e: &mut Engine, vid: u64, mbox: &Mbox, it: &Item, app: &mut App) 
             if fresh {
                 app.notice(
                     vid,
-                    format!("{} {} entered the union.", from.glyph(), from.name()),
+                    format!("{} {} joined the union.", from.glyph(), from.name()),
                 );
             }
             send(e, vid, hello);
@@ -574,7 +585,7 @@ pub fn on_blob(e: &mut Engine, vid: u64, mbox: &Mbox, it: &Item, app: &mut App) 
             term,
             to,
         } => {
-            // HELLOs answer one newcomer; the rest are none of my business.
+            // Each HELLO is addressed to one newcomer. Ignore HELLOs for others.
             if to != me {
                 return;
             }
@@ -582,14 +593,17 @@ pub fn on_blob(e: &mut Engine, vid: u64, mbox: &Mbox, it: &Item, app: &mut App) 
             let m = u.members.entry(from).or_insert_with(Member::new);
             m.mx = Some(mx);
             if now() < u.hello_until {
-                // Dissolution is the default: adopt the earliest end anyone reports.
+                // Adopt the earliest end time that any member reports.
                 if ends_at < u.ends_at && ends_at > now() {
                     u.ends_at = ends_at;
                 }
                 u.term = u.term.max(term);
             }
             if fresh {
-                app.notice(vid, format!("{} {} is here.", from.glyph(), from.name()));
+                app.notice(
+                    vid,
+                    format!("{} {} is in this union.", from.glyph(), from.name()),
+                );
             }
             sync_keys(e, vid);
         }
@@ -623,7 +637,7 @@ pub fn on_blob(e: &mut Engine, vid: u64, mbox: &Mbox, it: &Item, app: &mut App) 
                 .and_then(|m| m.chain.as_mut())
                 .filter(|c| c.gen == gen);
             let Some(chain) = chain else {
-                // No key yet: hold it briefly, it may be on its way.
+                // The sender's key has not arrived yet. Hold the message briefly.
                 u.held.retain(|h| h.4 > now());
                 if u.held.len() < 256 {
                     u.held.push((from, gen, idx, ct, now() + 120));
@@ -637,7 +651,13 @@ pub fn on_blob(e: &mut Engine, vid: u64, mbox: &Mbox, it: &Item, app: &mut App) 
         Body::Leave => {
             u.gone.insert(from);
             if u.members.remove(&from).is_some() {
-                app.notice(vid, format!("{} left. my keys rotate.", from.name()));
+                app.notice(
+                    vid,
+                    format!(
+                        "{} left the union. The union keys are being replaced.",
+                        from.name()
+                    ),
+                );
                 shrink(e, vid, app);
             }
         }
@@ -648,7 +668,7 @@ pub fn on_blob(e: &mut Engine, vid: u64, mbox: &Mbox, it: &Item, app: &mut App) 
                     let mine = if u.renewed {
                         ""
                     } else {
-                        " /renew to stay with them."
+                        " Use /renew if you also want to stay."
                     };
                     app.notice(
                         vid,
@@ -661,14 +681,11 @@ pub fn on_blob(e: &mut Engine, vid: u64, mbox: &Mbox, it: &Item, app: &mut App) 
             if term == u.term && u.members.contains_key(&from) {
                 u.votes.entry(target).or_default().insert(from);
                 let who = if target == me {
-                    "me".to_string()
+                    "you".to_string()
                 } else {
                     target.name()
                 };
-                app.notice(
-                    vid,
-                    format!("{} votes to rotate keys away from {who}.", from.name()),
-                );
+                app.notice(vid, format!("{} voted to remove {who}.", from.name()));
                 evaluate(e, vid, target, app);
             }
         }
@@ -722,7 +739,7 @@ pub fn tick(e: &mut Engine, app: &mut App) {
                     e,
                     vid,
                     app,
-                    "dissolved at its end. nothing of it remains here.",
+                    "The term ended and you did not renew, so you left the union. Its keys and messages were deleted from this device.",
                 );
                 continue;
             }
@@ -746,7 +763,7 @@ pub fn tick(e: &mut Engine, app: &mut App) {
             app.notice(
                 vid,
                 format!(
-                    "a new term. {stayed} other(s) stayed; {} did not.",
+                    "A new term has started. Other members who renewed: {stayed}. Members removed because they did not renew: {}.",
                     gone.len()
                 ),
             );
@@ -765,7 +782,8 @@ pub fn tick(e: &mut Engine, app: &mut App) {
     }
 }
 
-/// `/ttl` in a union: my term length from now on, and never later than now + ttl.
+/// `/ttl` in a union: sets the term length from now on. The union ends no
+/// later than now + ttl.
 pub fn set_ttl(e: &mut Engine, vid: u64, secs: u64) -> bool {
     let Some(u) = e.unions.get_mut(&vid) else {
         return false;
@@ -827,11 +845,11 @@ mod tests {
             "rosters {:?}",
             [roster(&a), roster(&b), roster(&c), roster(&d)]
         );
-        a.cmd("one union, no owner");
+        a.cmd("message to all members");
         assert!(
             until(&mut [&mut a, &mut b, &mut c, &mut d], 20, |p| p[1..]
                 .iter()
-                .all(|x| x.has(ViewKind::Union, "no owner")))
+                .all(|x| x.has(ViewKind::Union, "message to all members")))
             .await
         );
         // Drop vote: a and b rotate keys away from d.
@@ -848,7 +866,7 @@ mod tests {
             .await,
             "drop did not pass"
         );
-        assert!(d.has(ViewKind::Home, "rotated their keys away from me"));
+        assert!(d.has(ViewKind::Home, "voted to remove you"));
         // c leaves: a and b rotate again and take a new secret c cannot follow.
         let uid_before = a.e.unions.values().next().unwrap().keys.uid;
         let stale_invite = invite(&a);
@@ -872,21 +890,21 @@ mod tests {
             roster(&b),
             a.texts(ViewKind::Union)
         );
-        assert!(a.has(ViewKind::Union, "took a new secret"));
-        // The old invite is void: a newcomer holding it finds nobody.
+        assert!(a.has(ViewKind::Union, "has a new secret"));
+        // The old invite no longer works: a new member who uses it reaches no existing member.
         until(&mut [&mut a, &mut b], 3, |_| false).await;
         let mut late = Peer::new(a.e.net.cfg.relays[0].clone());
         late.cmd(&format!("/join {stale_invite}"));
         until(&mut [&mut a, &mut b, &mut late], 6, |_| false).await;
-        assert_eq!(roster(&late), 0, "void invite reaches no one");
+        assert_eq!(roster(&late), 0, "outdated invite reaches no member");
         assert_eq!(roster(&a), 1);
-        a.cmd("after the leaving");
+        a.cmd("message after leave");
         assert!(
             until(&mut [&mut a, &mut b], 20, |p| p[1]
-                .has(ViewKind::Union, "after the leaving"))
+                .has(ViewKind::Union, "message after leave"))
             .await
         );
-        assert!(!c.has(ViewKind::Union, "after the leaving"));
+        assert!(!c.has(ViewKind::Union, "message after leave"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -910,7 +928,7 @@ mod tests {
         a.cmd("/renew");
         // b does not renew: at the end b is out, a carries on alone into term 1.
         assert!(until(&mut [&mut a, &mut b], 20, |p| p[1].e.unions.is_empty()).await);
-        assert!(b.has(ViewKind::Home, "dissolved"));
+        assert!(b.has(ViewKind::Home, "you did not renew, so you left the union"));
         assert!(
             until(&mut [&mut a], 5, |p| p[0]
                 .e

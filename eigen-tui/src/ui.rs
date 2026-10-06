@@ -1,4 +1,5 @@
-//! Rendering. Monochrome base, one accent, box-drawing, no emoji.
+//! Rendering. The interface uses a monochrome base color, one accent color and
+//! box-drawing characters. It uses no emoji.
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line as TLine, Span};
@@ -106,7 +107,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     stream(f, cols[1], app, &p);
     input(f, rows[2], app, &p);
     if app.mode == Mode::Help {
-        help(f, area, &p);
+        help(f, area, app, &p);
     }
     if app.mode == Mode::Show {
         show(f, area, app, &p);
@@ -157,7 +158,7 @@ fn status(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
             Span::styled(format!("{} ", w.glyph()), p.key(&w)),
             Span::styled(w.name(), p.s(BASE).add_modifier(Modifier::BOLD)),
         ]),
-        None => parts.push(vec![Span::styled("No identity", p.dim())]),
+        None => parts.push(vec![Span::styled("No mask", p.dim())]),
     }
     parts.push(vec![Span::styled(
         format!("Mask {}/{}", app.active_mask + 1, app.masks.len()),
@@ -555,9 +556,9 @@ fn input(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
     });
 }
 
-fn help(f: &mut Frame, area: Rect, p: &Pal) {
+fn help(f: &mut Frame, area: Rect, app: &App, p: &Pal) {
     let w = area.width.min(76);
-    let h = (HELP.len() as u16 + 4).min(area.height);
+    let h = (HELP.len() as u16 + 3).min(area.height);
     let r = Rect {
         x: area.x + (area.width - w) / 2,
         y: area.y + (area.height - h) / 2,
@@ -575,8 +576,14 @@ fn help(f: &mut Frame, area: Rect, p: &Pal) {
         .max()
         .unwrap_or(10)
         .min(26);
-    let lines: Vec<TLine> = HELP
+    // Rows for commands: the overlay height minus the borders and the hint line.
+    let rows = (h as usize).saturating_sub(3);
+    let start = app.help_scroll.min(HELP.len().saturating_sub(rows));
+    let all_fit = rows >= HELP.len();
+    let mut lines: Vec<TLine> = HELP
         .iter()
+        .skip(start)
+        .take(rows)
         .map(|(k, d)| {
             TLine::from(vec![
                 Span::styled(
@@ -586,11 +593,18 @@ fn help(f: &mut Frame, area: Rect, p: &Pal) {
                 Span::styled(*d, p.dim()),
             ])
         })
-        .chain(std::iter::once(TLine::from(Span::styled(
-            " Press Esc to close.",
-            p.dim(),
-        ))))
         .collect();
+    let hint = if all_fit {
+        " Press Esc to close.".to_string()
+    } else {
+        format!(
+            " Rows {}-{} of {}. Up and Down scroll. Press Esc to close.",
+            start + 1,
+            (start + rows).min(HELP.len()),
+            HELP.len()
+        )
+    };
+    lines.push(TLine::from(Span::styled(hint, p.dim())));
     f.render_widget(Paragraph::new(lines).block(block), r);
 }
 
@@ -613,11 +627,11 @@ fn locked(f: &mut Frame, area: Rect, app: &App, p: &Pal) {
     );
     let fails = app.lock.as_ref().map(|l| l.fails).unwrap_or(0);
     let note = if fails == 0 {
-        "Enter the passphrase and press Enter. After 5 failed attempts, all data is destroyed."
+        "Enter the passphrase and press Enter. After 5 wrong attempts, all data is deleted."
             .to_string()
     } else {
         format!(
-            "Incorrect passphrase. {} attempts remain before all data is destroyed.",
+            "Incorrect passphrase. Attempts left before all data is deleted: {}.",
             5u8.saturating_sub(fails)
         )
     };
@@ -628,7 +642,7 @@ fn locked(f: &mut Frame, area: Rect, app: &App, p: &Pal) {
         ))
         .centered(),
     );
-    // No echo, not even the length.
+    // The passphrase is not echoed, and its length is not shown.
     lines.push(TLine::from(Span::styled("›", p.accent())).centered());
     f.render_widget(Paragraph::new(lines), area);
 }
@@ -649,7 +663,7 @@ fn boot(f: &mut Frame, area: Rect, p: &Pal) {
     f.render_widget(Paragraph::new(lines), area);
 }
 
-/// The screen decays to noise, then to nothing.
+/// Number of frames in the burn animation. The screen fills with noise, then clears.
 pub const BURN_FRAMES: u16 = 18;
 
 fn burn(f: &mut Frame, area: Rect, n: u16, p: &Pal) {
@@ -695,7 +709,7 @@ mod tests {
         app.mode = Mode::Normal;
         let m = eigen_core::identity::Mask::generate();
         app.masks.push(MaskInfo { who: m.who() });
-        let mut v = View::new(5, ViewKind::Union, "union test".into(), 0);
+        let mut v = View::new(5, ViewKind::Union, "Union test".into(), 0);
         v.ends_at = Some(now() + 3600);
         app.add_view(v);
         app.active = 1;
@@ -747,7 +761,7 @@ mod snapshot {
             .collect();
         app.masks.push(MaskInfo { who: ms[0] });
         app.masks.push(MaskInfo { who: ms[3] });
-        let mut v = View::new(5, ViewKind::Union, "union ochre-heron".into(), 0);
+        let mut v = View::new(5, ViewKind::Union, "Union ochre-heron".into(), 0);
         v.who = Some(ms[1]);
         v.ends_at = Some(now() + 13272);
         app.add_view(v);
@@ -755,14 +769,17 @@ mod snapshot {
         d.who = Some(ms[2]);
         app.add_view(d);
         app.active = 1;
-        app.notice(5, "the union holds 3. it dissolves unless renewed.");
+        app.notice(
+            5,
+            format!("{} {} joined the union.", ms[1].glyph(), ms[1].name()),
+        );
         for (w, t) in [
-            (ms[1], "no names here, only keys."),
+            (ms[1], "Hello."),
             (
                 ms[0],
-                "the relay holds nothing but expiring noise, and that is the point of it all.",
+                "The meeting is moved to 18:00. Please confirm that you can attend.",
             ),
-            (ms[2], "renew at dusk."),
+            (ms[2], "Confirmed."),
         ] {
             app.push(
                 5,
@@ -776,7 +793,7 @@ mod snapshot {
                 },
             );
         }
-        app.input = "mine, not yours".into();
+        app.input = "See you then.".into();
         let mut t = Terminal::new(TestBackend::new(80, 24)).unwrap();
         t.draw(|f| draw(f, &app)).unwrap();
         let buf = t.backend().buffer().clone();

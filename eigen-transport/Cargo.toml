@@ -1,6 +1,6 @@
 [package]
 name = "eigen-transport"
-description = "EIGENHEIT transports: Noise-encrypted relay links, I2P SAM, interface-bound dialing"
+description = "EIGENHEIT transports: Noise-encrypted relay connections, I2P through SAM, and connections bound to a network interface"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

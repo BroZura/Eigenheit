@@ -1,11 +1,12 @@
-//! The optional vault: one file, no header, no magic, fixed bucket size, two equal
-//! slots. Every byte is either a random salt/nonce, AEAD ciphertext, or random fill,
-//! so the file is indistinguishable from random bytes without a passphrase.
+//! The optional vault: a single file with no header, no magic number, a fixed bucket
+//! size and two slots of equal size. Every byte is a random salt or nonce, AEAD
+//! ciphertext, or random fill. Without a passphrase, the file cannot be distinguished
+//! from random bytes.
 //!
 //! Layout: `salt:32 ‖ slot0 ‖ slot1`, `slot = nonce:24 ‖ AEAD(k, padded, salt ‖ i)`.
-//! One slot holds the real vault; the other is random, or a decoy opened by a
-//! duress passphrase. A decoy may carry `wipe_other`: opening it silently destroys
-//! the other slot.
+//! One slot holds the real vault. The other slot is random data or a decoy that a
+//! duress passphrase opens. A decoy may set `wipe_other`. Opening such a decoy
+//! destroys the other slot without any notice.
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 
@@ -25,7 +26,7 @@ pub struct VaultData {
     /// (union secret, pow, mask index)
     pub unions: Vec<(Zeroizing<[u8; 32]>, u8, u16)>,
     pub pins: Vec<[u8; 32]>,
-    /// Keys I verified out of band (`/trust`).
+    /// Keys the user verified out of band (`/trust`).
     pub trusted: Vec<[u8; 32]>,
     pub active_mask: u16,
     pub wipe_other: bool,
@@ -81,7 +82,7 @@ impl VaultData {
     }
 }
 
-/// Argon2id, 64 MiB, 3 passes. Deliberately slow.
+/// Argon2id with 64 MiB and 3 passes. The derivation is slow by design.
 pub fn derive(pass: &str, salt: &[u8]) -> Result<Zeroizing<[u8; 32]>> {
     let params = argon2::Params::new(64 * 1024, 3, 1, Some(32)).map_err(|_| Error::Unknown)?;
     let a = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
@@ -154,7 +155,7 @@ impl Vault {
             .ok_or(Error::TooLong)?;
         let salt: [u8; 32] = random();
         let key = derive(pass, &salt)?;
-        // The real slot's position is random, so slot order says nothing.
+        // The position of the real slot is random, so the slot order reveals nothing.
         let slot = (random::<1>()[0] & 1) as usize;
         let mut slots = [vec![0u8; size + OVER], vec![0u8; size + OVER]];
         fill_random(&mut slots[1 - slot]);
@@ -176,7 +177,8 @@ impl Vault {
         })
     }
 
-    /// Open with a passphrase. Wrong passphrase and "not a vault" are the same error.
+    /// Open with a passphrase. A wrong passphrase and a file that is not a vault return
+    /// the same error.
     pub fn open(path: &str, pass: &str) -> Result<(Vault, VaultData)> {
         let mut file = fs::read(path).map_err(|_| Error::Crypto)?;
         let size = slot_size(file.len()).ok_or(Error::Crypto)?;
@@ -191,7 +193,8 @@ impl Vault {
                 let n = u32::from_be_bytes([pt[0], pt[1], pt[2], pt[3]]) as usize;
                 let data = VaultData::decode(pt.get(4..4 + n).ok_or(Error::Malformed)?)?;
                 if data.wipe_other {
-                    // Duress: silently replace the other slot with fresh random bytes.
+                    // Duress passphrase: overwrite the other slot with new random bytes
+                    // without any notice.
                     let o = 1 - i;
                     fill_random(
                         &mut file[SALT + o * (size + OVER)..SALT + (o + 1) * (size + OVER)],
@@ -215,7 +218,7 @@ impl Vault {
         Err(Error::Crypto)
     }
 
-    /// Re-encrypt my slot in place; the other slot is untouched.
+    /// Re-encrypt this vault's slot in place. The other slot is not changed.
     pub fn save(&self, data: &VaultData) -> Result<()> {
         let mut file = fs::read(&self.path).map_err(|_| Error::Unknown)?;
         if slot_size(file.len()) != Some(self.size) {
@@ -228,7 +231,7 @@ impl Vault {
     }
 
     /// Overwrite the whole file with random bytes, sync, then unlink.
-    /// Limits: SSD wear-levelling, journaling and snapshots may keep old blocks.
+    /// Limits: SSD wear leveling, journaling and snapshots may keep old blocks.
     pub fn burn(path: &str) -> bool {
         let Ok(meta) = fs::metadata(path) else {
             return false;
@@ -298,7 +301,7 @@ mod tests {
         Vault::create(&p, "real", &data(3), Some(("calm", &decoy))).unwrap();
         assert_eq!(Vault::open(&p, "calm").unwrap().1.masks.len(), 1);
         assert_eq!(Vault::open(&p, "real").unwrap().1.masks.len(), 3);
-        // Wipe mode: opening the duress slot destroys the real one, silently.
+        // Wipe mode: opening the duress slot destroys the real slot without notice.
         let p2 = tmp("d");
         let wipe = VaultData {
             wipe_other: true,

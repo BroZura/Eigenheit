@@ -1,5 +1,5 @@
-//! Fixed-size cells between client and relay. Every frame is exactly 1024 bytes,
-//! keepalives included; unused bytes are random.
+//! Fixed-size cells exchanged between client and relay. Every frame, including
+//! keepalives, is exactly 1024 bytes. Unused bytes are random.
 use crate::crypto::pad_random;
 use crate::wire::{Reader, Writer};
 use crate::{Error, Result};

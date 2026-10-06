@@ -1,5 +1,5 @@
 //! DMs: sealed-sender X3DH introduction, Double Ratchet sessions, rotating mailboxes,
-//! fixed-size blobs. The relay sees a mailbox id and 960 random-looking bytes.
+//! fixed-size blobs. The relay sees a mailbox ID and 960 random-looking bytes.
 use x25519_dalek::PublicKey;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -39,7 +39,7 @@ fn bundle_key(intro: &[u8; 16]) -> Zeroizing<[u8; 32]> {
     kdf32(&[0u8; 32], intro, b"eigen/bundle-key")
 }
 
-/// Blob carrying my signed prekey bundle (posted to `card.bundle_mbox()`).
+/// Blob carrying the mask's signed prekey bundle (posted to `card.bundle_mbox()`).
 pub fn bundle_blob(m: &Mask) -> Result<Vec<u8>> {
     let mut v = vec![T_BUNDLE];
     v.extend(seal_fixed(
@@ -79,12 +79,12 @@ pub fn open_opk(card: &Card, b: &[u8]) -> Result<(u32, [u8; 32])> {
     Ok((r.u32()?, r.arr()?))
 }
 
-/// What arrives, after all layers are off.
+/// A received message after all encryption layers are removed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Incoming {
     pub kind: u8,
     pub ttl: u32,
-    /// Random per-message id, so a message can later be taken back (`/unsay`).
+    /// Random per-message id, used to retract the message later (`/unsay`).
     pub id: [u8; 8],
     pub text: String,
 }
@@ -213,7 +213,7 @@ impl Session {
     ) -> Result<(Mbox, u32, Vec<u8>)> {
         let epoch = self.ratchet.epoch();
         if epoch != self.last_epoch || self.mine.is_empty() {
-            // New sending chain → new receive mailbox for the replies.
+            // A new sending chain starts a new receive mailbox for replies.
             let t = crate::now();
             for m in self.mine.iter_mut().filter(|m| m.retired.is_none()) {
                 m.retired = Some(t);
@@ -254,7 +254,7 @@ impl Session {
         Ok(inc)
     }
 
-    /// A DM blob that arrived at one of my mailboxes.
+    /// Open a DM blob that arrived at one of this session's mailboxes.
     pub fn open(&mut self, mbox: &Mbox, b: &[u8]) -> Result<Incoming> {
         let secret = self
             .mine
@@ -267,7 +267,7 @@ impl Session {
         }
         let rmsg = open_fixed(&mbox_key(&secret), &b[1..1 + DM_SEAL + 40], mbox)?;
         let inc = self.accept(&rmsg)?;
-        // The peer answered: from now on, write to their mailbox, not their intro.
+        // The peer has replied. Later messages are sent to the peer's mailbox.
         self.intro = None;
         Ok(inc)
     }
@@ -284,7 +284,7 @@ impl Session {
     }
 }
 
-/// Result of opening a blob in my intro mailbox.
+/// Result of opening a blob from the mask's intro mailbox.
 pub enum Intro {
     New(Box<Session>, Incoming),
     /// Belongs to an existing session (`ek`); hand `rmsg` to it.
@@ -297,7 +297,7 @@ impl Session {
     }
 }
 
-/// Open a sealed-sender introduction addressed to me.
+/// Open a sealed-sender introduction addressed to this mask.
 pub fn open_intro(me: &mut Mask, b: &[u8], known: impl Fn(&[u8; 32]) -> bool) -> Result<Intro> {
     if b.len() < 41 + INTRO_SEAL + 40 || b[0] != T_INTRO {
         return Err(Error::Malformed);

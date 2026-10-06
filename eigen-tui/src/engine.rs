@@ -56,7 +56,8 @@ pub struct NetCfg {
 }
 
 impl NetCfg {
-    /// How I reach my relays, for the status bar, and whether any route exposes me.
+    /// Returns the transport label for the status bar and whether any route is exposed
+    /// (a direct connection, or a VPN route without encryption).
     pub fn describe(&self) -> (String, bool) {
         let mut parts: Vec<String> = Vec::new();
         let mut exposed = false;
@@ -90,8 +91,8 @@ impl NetCfg {
     }
 }
 
-/// Links per isolation context: each mask, each dm and each union gets its own
-/// connections (and, over tor, its own circuits).
+/// Links per isolation context. Each mask, DM and union has its own connections
+/// and, over Tor, its own circuits.
 pub struct Net {
     pub cfg: NetCfg,
     links: HashMap<u64, Vec<Link>>,
@@ -114,7 +115,9 @@ impl Net {
                     .map(|r| {
                         Link::spawn(LinkCfg {
                             relay: r.clone(),
-                            // Onion relays only through tor; clear-net only exists with consent.
+                            // Onion relays are reached only through the Tor SOCKS proxy. I2P
+                            // relays use the SAM bridge, and direct relays are connected
+                            // without a proxy.
                             socks: if r.is_onion() {
                                 cfg.socks.clone()
                             } else {
@@ -158,6 +161,8 @@ pub struct DmState {
     pub pending: Vec<String>,
     pub ctx: u64,
     retry_at: Option<u64>,
+    /// Expiry set with /ttl before the key exchange finished.
+    pub ttl: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -230,13 +235,13 @@ impl Engine {
         self.masks.len() - 1
     }
 
-    /// TOFU on names: a second key wearing a name I've already seen is loud.
+    /// Trust on first use for names. Warns when a known name appears with a different key.
     pub fn pin(&mut self, who: Who, app: &mut App) {
         let name = who.name();
         match self.pins.get(&name) {
             Some(k) if *k != who => {
                 let id = app.view().id;
-                app.warn(id, format!("KEY CHANGE: someone presents the name {name} with a different key. Not the one I saw before. /verify before trusting anything."));
+                app.warn(id, format!("The key for {name} has changed. The name is now used with a different key. Use /verify to check the key before you trust this contact."));
             }
             Some(_) => {}
             None => {
@@ -409,7 +414,7 @@ impl Engine {
             NetEvent::Bundle { view, got } => self.on_bundle(view, got, app),
             NetEvent::Sent { view, ok } => {
                 if !ok && view != 0 {
-                    app.warn(view, "no relay took that. it was not delivered.");
+                    app.warn(view, "No relay accepted the message. It was not delivered.");
                 }
             }
         }
@@ -469,7 +474,10 @@ impl Engine {
                     .map(|(v, _)| *v);
                 let vid = match existing {
                     Some(v) => {
-                        app.notice(v, "they began a new session. the old keys are gone.");
+                        app.notice(
+                            v,
+                            "The contact started a new session. The keys of the previous session were deleted.",
+                        );
                         v
                     }
                     None => {
@@ -481,7 +489,7 @@ impl Engine {
                         app.notice(
                             vid,
                             format!(
-                                "{} reached me. forward secret; their words live {}.",
+                                "{} contacted you. This conversation is encrypted with forward secrecy. Their messages expire after {}.",
                                 peer.name(),
                                 crate::app::fmt_duration(inc.ttl as u64)
                             ),
@@ -502,6 +510,7 @@ impl Engine {
                         pending: Vec::new(),
                         ctx: random_u64(),
                         retry_at: None,
+                        ttl: None,
                     },
                 );
                 self.show(vid, peer, inc, app);
@@ -518,7 +527,10 @@ impl Engine {
         if let Ok(inc) = s.open(mbox, blob) {
             let peer = d.peer;
             if was_init {
-                app.notice(vid, "they answered. the handshake is complete.");
+                app.notice(
+                    vid,
+                    format!("{} replied. The key exchange is complete.", peer.name()),
+                );
             }
             self.show(vid, peer, inc, app);
         }
@@ -526,7 +538,10 @@ impl Engine {
 
     fn show(&mut self, vid: u64, peer: Who, inc: dm::Incoming, app: &mut App) {
         if inc.kind == K_HELLO {
-            app.notice(vid, format!("{} opened a dm.", peer.name()));
+            app.notice(
+                vid,
+                format!("{} opened a direct message with you.", peer.name()),
+            );
         } else {
             app.receive(vid, peer, inc.kind, inc.id, inc.text, inc.ttl as u64, false);
         }
@@ -580,20 +595,26 @@ impl Engine {
         }
         let Some((bundle, opk)) = got else {
             d.retry_at = Some(now() + 10);
-            app.notice(vid, "their keys are not on my relays (yet). trying again.");
+            app.notice(
+                vid,
+                "The contact's keys were not found on your relays. Trying again in 10 seconds.",
+            );
             return;
         };
         let Some(card) = d.card else { return };
         let mi = d.mask;
         match Session::start(&self.masks[mi].mask, &card, &bundle, opk) {
-            Ok(s) => {
+            Ok(mut s) => {
+                if let Some(t) = d.ttl {
+                    s.ttl = t;
+                }
                 d.session = Some(s);
                 app.notice(
                     vid,
                     if opk.is_some() {
-                        "keys agreed (with one-time prekey)."
+                        "Keys exchanged. A one-time prekey was used."
                     } else {
-                        "keys agreed (no one-time prekey left: weaker against replay)."
+                        "Keys exchanged. No one-time prekey was available, so this session has weaker protection against replay attacks."
                     },
                 );
                 let pending = std::mem::take(&mut d.pending);
@@ -604,7 +625,7 @@ impl Engine {
             }
             Err(_) => app.warn(
                 vid,
-                "their bundle does not verify against their card. not proceeding.",
+                "The contact's published key bundle does not match their card. The conversation was not started.",
             ),
         }
     }
@@ -615,7 +636,10 @@ impl Engine {
         };
         let Some(s) = d.session.as_mut() else {
             d.pending.push(text);
-            app.notice(vid, "queued until their keys arrive.");
+            app.notice(
+                vid,
+                "Message queued. It will be sent when the contact's keys arrive.",
+            );
             return;
         };
         match s.seal(&self.masks[d.mask].mask, kind, id, &text) {
@@ -637,14 +661,14 @@ impl Engine {
                 let i = self.add_mask(Mask::generate(), app);
                 app.active_mask = i;
                 app.here_notice(format!(
-                    "I wear a fresh mask: {}. nothing links it to the others.",
+                    "New mask created: {}. It is not linked to your other masks.",
                     app.masks[i].who.name()
                 ));
             }
             Action::SwitchMask(i) => {
                 app.active_mask = i;
                 app.here_notice(format!(
-                    "I am {} now. new unions and dms wear this mask.",
+                    "Active mask: {}. New unions and direct messages use this mask.",
                     app.masks[i].who.name()
                 ));
             }
@@ -652,13 +676,16 @@ impl Engine {
             Action::Say(vid, kind, text) => self.say(vid, kind, random(), text, app),
             Action::Unsay(vid) => match app.last_mine(vid) {
                 Some(id) => self.say(vid, SAY_UNSAY, id, String::new(), app),
-                None => app.notice(vid, "nothing of mine here to take back."),
+                None => app.notice(
+                    vid,
+                    "You have no message in this conversation to take back.",
+                ),
             },
             Action::Trust(vid, name) => self.trust(vid, name, app),
             Action::Who(vid) => crate::unions::who(self, vid, app),
             Action::Show(vid, item) => match self.item_text(vid, item, app) {
                 Some((title, text)) => app.show(title, text),
-                None => app.here_notice("This is only available in a union."),
+                None => app.here_notice("This command is only available in a union."),
             },
             Action::Copy(vid, item) => match self.item_text(vid, item, app) {
                 Some((title, text)) => {
@@ -668,7 +695,7 @@ impl Engine {
                         crate::app::CLIPBOARD_SECS
                     ));
                 }
-                None => app.here_notice("This is only available in a union."),
+                None => app.here_notice("This command is only available in a union."),
             },
             Action::Leave(vid) => {
                 if let Some(d) = self.dms.remove(&vid) {
@@ -677,15 +704,21 @@ impl Engine {
                     crate::unions::leave(self, vid, app);
                 }
                 app.remove_view(vid);
-                app.here_notice("gone. nothing of it remains here.");
+                app.here_notice("You left the conversation. Its messages and keys were deleted.");
             }
             Action::Ttl(vid, secs) => {
-                if let Some(s) = self.dms.get_mut(&vid).and_then(|d| d.session.as_mut()) {
-                    s.ttl = secs as u32;
+                if let Some(d) = self.dms.get_mut(&vid) {
+                    d.ttl = Some(secs as u32);
+                    if let Some(s) = d.session.as_mut() {
+                        s.ttl = secs as u32;
+                    }
                 } else if crate::unions::set_ttl(self, vid, secs) {
                     app.notice(
                         vid,
-                        "the union ends no later than that for me, and each term lasts that long.",
+                        format!(
+                            "Your term length in this union is now {d}. Your current term ends in {d} or earlier. This does not change the term of other members.",
+                            d = crate::app::fmt_duration(secs)
+                        ),
                     );
                 }
                 if let Some(v) = app.view_mut(vid) {
@@ -693,7 +726,10 @@ impl Engine {
                 }
                 app.notice(
                     vid,
-                    format!("my words here now live {}.", crate::app::fmt_duration(secs)),
+                    format!(
+                        "Messages you send in this conversation now expire after at most {}.",
+                        crate::app::fmt_duration(secs)
+                    ),
                 );
             }
             Action::Verify(vid, name) => self.verify(vid, name, app),
@@ -701,9 +737,9 @@ impl Engine {
                 self.net.cfg.cover.store(on, Ordering::Relaxed);
                 app.cover = on;
                 app.here_notice(if on {
-                    "cover traffic on: one cell per beat, whether I speak or not."
+                    "Cover traffic on. Data is sent at a constant rate, whether or not you write messages."
                 } else {
-                    "cover traffic off: my silences are visible again."
+                    "Cover traffic off. A network observer can see when you send messages."
                 });
             }
             Action::Export(arg) => self.export(arg, app),
@@ -719,18 +755,18 @@ impl Engine {
                 if self.vault.is_none() {
                     return app.notice(
                         vid,
-                        "ram-only: nothing is kept. start with --vault <path> to choose otherwise.",
+                        "No vault is in use, so nothing is saved. To save unions, start eigen with --vault PATH.",
                     );
                 }
                 let uid = u.keys.uid;
                 if self.kept.remove(&uid) {
                     app.notice(
                         vid,
-                        "no longer kept. after I close, this union is forgotten.",
+                        "This union is no longer saved in the vault. It will not be restored after a restart.",
                     );
                 } else {
                     self.kept.insert(uid);
-                    app.notice(vid, "kept in my vault (its secret, nothing it said). I rejoin it on my next start.");
+                    app.notice(vid, "This union is saved in your vault. The vault stores the union secret and the mask you use in it. Messages are not stored. The union is rejoined automatically the next time you open this vault.");
                 }
                 self.dirty = true;
             }
@@ -743,13 +779,13 @@ impl Engine {
             Ok(c) => c,
             Err(_) => {
                 return app.here_notice(format!(
-                    "a dm needs a card: {CARD_PREFIX}…  (/card shows mine)"
+                    "Invalid or missing contact card. Usage: /dm <card>. A card starts with {CARD_PREFIX}. Use /card to show your own card."
                 ))
             }
         };
         let mi = app.active_mask;
         if self.masks.iter().any(|m| m.mask.who() == card.who) {
-            return app.here_notice("that card is one of my own masks.");
+            return app.here_notice("That card belongs to one of your own masks.");
         }
         self.pin(card.who, app);
         if let Some((v, _)) = self
@@ -769,7 +805,7 @@ impl Engine {
         app.notice(
             vid,
             format!(
-                "reaching {} as {}…",
+                "Contacting {} as {}.",
                 card.who.name(),
                 app.masks[mi].who.name()
             ),
@@ -784,6 +820,7 @@ impl Engine {
                 pending: Vec::new(),
                 ctx: random_u64(),
                 retry_at: None,
+                ttl: None,
             },
         );
         self.fetch_bundle(vid);
@@ -809,21 +846,31 @@ impl Engine {
         }
     }
 
-    /// `/trust`: I compared the SAS out of band and mark this key ✓ (toggle).
+    /// `/trust`: marks this key as verified (✓) after the user has compared the SAS
+    /// through another channel. Calling it again removes the mark.
     fn trust(&mut self, vid: u64, name: Option<String>, app: &mut App) {
         let Some(t) = self.target(vid, name.as_deref()) else {
             return app.notice(
                 vid,
-                "trust whom? /trust <name> (compare the SAS from /verify first)",
+                "No matching contact was found. Usage: /trust <name>. Compare the SAS from /verify first.",
             );
         };
         if self.trusted.remove(&t) {
             app.trusted.remove(&t);
-            app.notice(vid, format!("{} is no longer marked verified.", t.name()));
+            app.notice(
+                vid,
+                format!("{} is no longer marked as verified.", t.name()),
+            );
         } else {
             self.trusted.insert(t);
             app.trusted.insert(t);
-            app.notice(vid, format!("✓ {} — I compared the SAS myself. if this key ever changes, I will hear about it.", t.name()));
+            app.notice(
+                vid,
+                format!(
+                    "✓ {} is marked as verified. You will see a warning if this key changes.",
+                    t.name()
+                ),
+            );
         }
         self.dirty = true;
     }
@@ -842,18 +889,18 @@ impl Engine {
             (None, None) => me,
         };
         let (Some(t), Some(me)) = (target, me) else {
-            return app.notice(vid, "verify whom? /verify <name>");
+            return app.notice(vid, "No matching contact was found. Usage: /verify <name>.");
         };
         app.notice(vid, format!("{} {}", t.glyph(), t.name()));
         for row in t.identicon() {
             let s: String = row.iter().map(|b| if *b { "██" } else { "  " }).collect();
             app.notice(vid, format!("    {s}"));
         }
-        app.notice(vid, format!("fingerprint  {}", t.fingerprint()));
-        app.notice(vid, format!("pgp          {}", pgp::fingerprint(&t)));
+        app.notice(vid, format!("Fingerprint  {}", t.fingerprint()));
+        app.notice(vid, format!("PGP          {}", pgp::fingerprint(&t)));
         if t != me {
-            app.notice(vid, format!("SAS  {}", sas(&me, &t)));
-            app.notice(vid, "compare the SAS out of band. same words on both screens → nobody stands between us.");
+            app.notice(vid, format!("SAS          {}", sas(&me, &t)));
+            app.notice(vid, "Compare the SAS (five words and a six-digit number) with this contact through another channel, for example in person or by phone. If both of you see the same SAS, no one is intercepting the connection between you.");
         }
     }
 
@@ -884,21 +931,26 @@ impl Engine {
         let card = ms.mask.card().encode();
         match arg.as_deref() {
             Some("card") => {
-                app.here_notice("my card (whoever holds it can reach this mask):");
+                app.here_notice(
+                    "Your contact card. Anyone who has it can send messages to this mask:",
+                );
                 app.here_notice(card);
             }
             Some(path) => {
                 let armor = pgp::export(&ms.mask);
                 match std::fs::write(path, armor) {
                     Ok(_) => app.here_notice(format!(
-                        "public key written to {path} — I chose to touch the disk."
+                        "Public key written to {path}. The file stays on disk until you delete it."
                     )),
-                    Err(_) => app.here_notice("could not write there."),
+                    Err(_) => app.here_notice(format!("Could not write the file {path}.")),
                 }
             }
             None => {
                 let armor = pgp::export(&ms.mask);
-                app.here_notice(format!("pgp {}", pgp::fingerprint(&ms.mask.who())));
+                app.here_notice(format!(
+                    "PGP fingerprint: {}",
+                    pgp::fingerprint(&ms.mask.who())
+                ));
                 for l in armor.lines() {
                     app.here_notice(l.to_string());
                 }
@@ -919,17 +971,19 @@ impl Engine {
             Some(w) => {
                 self.pin(w, app);
                 app.here_notice(format!(
-                    "pinned {} {} · pgp {}",
+                    "Imported the key of {} {}. PGP fingerprint: {}",
                     w.glyph(),
                     w.name(),
                     pgp::fingerprint(&w)
                 ));
             }
-            None => app.here_notice("not a card or an ed25519 pgp public key I can verify."),
+            None => app.here_notice(
+                "Import failed. Provide a contact card or a file with an Ed25519 PGP public key.",
+            ),
         }
     }
 
-    /// Write masks, kept unions and pins to the vault (if I chose to have one).
+    /// Writes masks, kept unions and pins to the vault, if one is in use.
     pub fn persist(&mut self, app: &App) {
         self.dirty = false;
         let Some(v) = &self.vault else { return };
@@ -1123,21 +1177,38 @@ mod tests {
         until(&mut [&mut a, &mut b], 1, |_| false).await;
         let card = b.card();
         a.cmd(&format!("/dm {card}"));
-        a.cmd("mine, not yours");
+        // Set before the key exchange has finished: must still apply.
+        a.cmd("/ttl 10m");
+        a.cmd("hello from alice");
         let ok = until(&mut [&mut a, &mut b], 20, |p| {
-            p[1].has(ViewKind::Dm, "mine, not yours")
+            p[1].has(ViewKind::Dm, "hello from alice")
         })
         .await;
-        assert!(ok, "bob never heard alice: {:?}", b.texts(ViewKind::Dm));
+        assert!(
+            ok,
+            "bob did not receive alice's message: {:?}",
+            b.texts(ViewKind::Dm)
+        );
+        let sa =
+            a.e.dms
+                .values()
+                .next()
+                .and_then(|d| d.session.as_ref())
+                .unwrap();
+        assert_eq!(sa.ttl, 600, "/ttl set before the key exchange is kept");
         let bob_view = b.app.views.iter().find(|v| v.kind == ViewKind::Dm).unwrap();
         assert_eq!(bob_view.who, Some(a.me()));
         b.focus_kind(ViewKind::Dm);
-        b.cmd("not theirs");
+        b.cmd("hello from bob");
         let ok = until(&mut [&mut a, &mut b], 20, |p| {
-            p[0].has(ViewKind::Dm, "not theirs")
+            p[0].has(ViewKind::Dm, "hello from bob")
         })
         .await;
-        assert!(ok, "alice never heard bob: {:?}", a.texts(ViewKind::Dm));
+        assert!(
+            ok,
+            "alice did not receive bob's message: {:?}",
+            a.texts(ViewKind::Dm)
+        );
         a.cmd("again");
         assert!(
             until(&mut [&mut a, &mut b], 20, |p| p[1]
@@ -1159,7 +1230,7 @@ mod tests {
             .collect();
         assert_eq!(sa, sb);
         assert!(!sa.is_empty());
-        // Leaving leaves nothing.
+        // Leaving removes the DM state and view.
         a.cmd("/leave");
         assert!(a.e.dms.is_empty());
         assert!(a.app.views.iter().all(|v| v.kind != ViewKind::Dm));

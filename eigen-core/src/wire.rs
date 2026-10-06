@@ -1,4 +1,4 @@
-//! Length-checked binary encoding, base32 and hex. No serde, no surprises.
+//! Length-checked binary encoding, base32, base64 and hex.
 use crate::{Error, Result};
 
 #[derive(Default)]

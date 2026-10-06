@@ -1,7 +1,8 @@
-//! Noise_NK_25519_ChaChaPoly_BLAKE2s link between client and relay (via `snow`).
-//! The client knows the relay's static key from its address (`host:port#key`);
-//! the relay learns nothing about the client. Every 1024-byte cell becomes a
-//! 1040-byte frame; frames are as fixed-size as the cells inside them.
+//! Encrypted link between client and relay, using Noise_NK_25519_ChaChaPoly_BLAKE2s
+//! (implemented by `snow`). The client gets the relay's static key from the relay
+//! address (`host:port#key`). The client has no static key, so the handshake does
+//! not identify the client to the relay. Each 1024-byte cell is sent as a
+//! 1040-byte frame, so all frames have the same size.
 use std::io;
 
 use eigen_core::cell::CELL;
@@ -18,11 +19,12 @@ const HS: usize = 48;
 fn builder() -> io::Result<Builder<'static>> {
     let params = PATTERN
         .parse()
-        .map_err(|_| io::Error::other("noise params"))?;
+        .map_err(|_| io::Error::other("Invalid Noise parameters"))?;
     Ok(Builder::new(params))
 }
 
-/// A relay's link key. Ephemeral by default: dies with the relay process.
+/// A relay's link key. It is kept in memory only and is lost when the relay
+/// process exits.
 pub struct RelayKey {
     private: Zeroizing<Vec<u8>>,
     pub public: [u8; 32],
@@ -32,7 +34,7 @@ impl RelayKey {
     pub fn generate() -> io::Result<RelayKey> {
         let kp = builder()?
             .generate_keypair()
-            .map_err(|_| io::Error::other("keygen"))?;
+            .map_err(|_| io::Error::other("Key generation failed"))?;
         let mut public = [0u8; 32];
         public.copy_from_slice(&kp.public);
         Ok(RelayKey {
@@ -40,7 +42,7 @@ impl RelayKey {
             public,
         })
     }
-    /// What clients append to the relay address: `host:port#<this>`.
+    /// Encoded public key that clients append to the relay address: `host:port#<key>`.
     pub fn encoded(&self) -> String {
         eigen_core::wire::base32(&self.public)
     }
@@ -63,7 +65,7 @@ impl Link {
         let n = self
             .ts
             .write_message(nonce, cell, &mut out)
-            .map_err(|_| io::Error::other("seal"))?;
+            .map_err(|_| io::Error::other("Encryption failed"))?;
         debug_assert_eq!(n, FRAME);
         Ok(out)
     }
@@ -72,9 +74,9 @@ impl Link {
         let n = self
             .ts
             .read_message(nonce, frame, &mut out)
-            .map_err(|_| io::Error::other("open"))?;
+            .map_err(|_| io::Error::other("Decryption failed"))?;
         if n != CELL {
-            return Err(io::Error::other("frame"));
+            return Err(io::Error::other("Invalid frame length"));
         }
         let mut cell = [0u8; CELL];
         cell.copy_from_slice(&out[..CELL]);
@@ -82,55 +84,56 @@ impl Link {
     }
 }
 
-/// Client side: I know the relay's key; it does not learn mine (there is none).
+/// Client side of the handshake. The client must know the relay's public key.
+/// The client has no static key.
 pub async fn initiate<S: AsyncRead + AsyncWrite + Unpin>(
     s: &mut S,
     relay: &[u8; 32],
 ) -> io::Result<Link> {
     let mut hs = builder()?
         .remote_public_key(relay)
-        .map_err(|_| io::Error::other("key"))?
+        .map_err(|_| io::Error::other("Invalid key"))?
         .build_initiator()
-        .map_err(|_| io::Error::other("noise"))?;
+        .map_err(|_| io::Error::other("Noise handshake failed"))?;
     let mut buf = [0u8; 128];
     let n = hs
         .write_message(&[], &mut buf)
-        .map_err(|_| io::Error::other("noise"))?;
+        .map_err(|_| io::Error::other("Noise handshake failed"))?;
     s.write_all(&buf[..n]).await?;
     let mut msg = [0u8; HS];
     s.read_exact(&mut msg).await?;
     hs.read_message(&msg, &mut buf)
-        .map_err(|_| io::Error::other("relay key mismatch"))?;
+        .map_err(|_| io::Error::other("Relay key does not match"))?;
     Ok(Link {
         ts: hs
             .into_stateless_transport_mode()
-            .map_err(|_| io::Error::other("noise"))?,
+            .map_err(|_| io::Error::other("Noise handshake failed"))?,
     })
 }
 
-/// Relay side.
+/// Relay side of the handshake.
 pub async fn respond<S: AsyncRead + AsyncWrite + Unpin>(
     s: &mut S,
     key: &RelayKey,
 ) -> io::Result<Link> {
     let mut hs = builder()?
         .local_private_key(&key.private)
-        .map_err(|_| io::Error::other("key"))?
+        .map_err(|_| io::Error::other("Invalid key"))?
         .build_responder()
-        .map_err(|_| io::Error::other("noise"))?;
+        .map_err(|_| io::Error::other("Noise handshake failed"))?;
     let mut msg = [0u8; HS];
     s.read_exact(&mut msg).await?;
     let mut buf = [0u8; 128];
     hs.read_message(&msg, &mut buf)
-        .map_err(|_| io::Error::other("noise"))?;
+        .map_err(|_| io::Error::other("Noise handshake failed"))?;
     let n = hs
         .write_message(&[], &mut buf)
-        .map_err(|_| io::Error::other("noise"))?;
+        .map_err(|_| io::Error::other("Noise handshake failed"))?;
     s.write_all(&buf[..n]).await?;
     Ok(Link {
         ts: hs
             .into_stateless_transport_mode()
-            .map_err(|_| io::Error::other("noise"))?,
+            .map_err(|_| io::Error::other("Noise handshake failed"))?,
     })
 }
 
@@ -151,7 +154,10 @@ mod tests {
             let f = client.seal(n, &cell).unwrap();
             assert_eq!(f.len(), FRAME);
             assert_eq!(server.open(n, &f).unwrap(), cell);
-            assert!(server.open(n + 1, &f).is_err(), "nonce bound");
+            assert!(
+                server.open(n + 1, &f).is_err(),
+                "a frame must not open with a different nonce"
+            );
         }
         assert_eq!(parse_key(&eigen_core::wire::base32(&public)), Some(public));
     }
@@ -166,7 +172,7 @@ mod tests {
         });
         assert!(
             initiate(&mut a, &other).await.is_err(),
-            "impersonated relay detected"
+            "the handshake must fail with a wrong relay key"
         );
     }
 }

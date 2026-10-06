@@ -1,4 +1,4 @@
-//! Which routes to a relay I accept, and why. Refusals explain themselves.
+//! Checks which routes to a relay are allowed. Each refusal states the reason.
 use eigen_transport::device::{self, Kind};
 
 use crate::tor::RelayAddr;
@@ -9,17 +9,17 @@ pub fn admit(relays: &[RelayAddr], vpn: Option<&str>, risk: bool) -> Result<Vec<
     if let Some(dev) = vpn {
         match device::inspect(dev) {
             Ok(Kind::WireGuard) => {}
-            Ok(Kind::Tunnel) => warn.push(format!("{dev} is a tunnel interface (not WireGuard); direct links are bound to it.")),
+            Ok(Kind::Tunnel) => warn.push(format!("{dev} is a tunnel interface, but it could not be confirmed as WireGuard. Direct connections are bound to it.")),
             Ok(Kind::Other) => {
                 if !risk {
-                    return Err(format!("{dev} does not look like a VPN or WireGuard tunnel. refusing (or --i-accept-the-risk)."));
+                    return Err(format!("{dev} does not appear to be a VPN or WireGuard interface, so it was refused. To use it, add --i-accept-the-risk."));
                 }
-                warn.push(format!("{dev} does not look like a tunnel. I bound to it anyway, because I was told to."));
+                warn.push(format!("{dev} does not appear to be a tunnel interface. Direct connections are bound to it because --i-accept-the-risk is set."));
             }
-            Err(_) => return Err(format!("interface {dev} does not exist. nothing will leave around it: bring the tunnel up first.")),
+            Err(_) => return Err(format!("The interface {dev} does not exist. Start the tunnel first.")),
         }
         if !relays.iter().any(|r| r.is_clear()) {
-            warn.push("--vpn binds direct relays only; tor and i2p keep their own routes (run their daemons over the VPN if I want that too).".into());
+            warn.push("--vpn applies to direct relays only. Tor and I2P relays use their own routes. To send Tor or I2P traffic through the VPN, run the Tor or I2P daemon over the VPN.".into());
         }
     }
     for r in relays.iter().filter(|r| r.is_clear()) {
@@ -30,19 +30,19 @@ pub fn admit(relays: &[RelayAddr], vpn: Option<&str>, risk: bool) -> Result<Vec<
                 .parse::<std::net::IpAddr>()
                 .is_err()
         {
-            return Err(format!("{name}: through a tunnel I need an IP address; resolving a name would ask DNS outside it."));
+            return Err(format!("Relay {name}: use an IP address with --vpn. Resolving a host name would send a DNS request outside the tunnel."));
         }
         let problem = match (vpn.is_some(), r.key.is_some()) {
             (true, true) => None,
-            (true, false) => Some("no relay key (#KEY): the VPN provider would read which mailboxes I touch. use the relay's HOST:PORT#KEY"),
-            (false, true) => Some("no tunnel: the relay and my network would see my IP. use --vpn <wg0>, or a .onion / .i2p relay"),
-            (false, false) => Some("clear-net and unencrypted: my network sees which mailboxes I touch and when. use .onion, .i2p, or --vpn with HOST:PORT#KEY"),
+            (true, false) => Some("The relay key (#KEY) is missing. Without it, the VPN provider can see which mailboxes you use. Give the relay as IP:PORT#KEY"),
+            (false, true) => Some("No tunnel is set. The relay and your network can see your IP address. Use --vpn IFACE, or use a .onion or .i2p relay"),
+            (false, false) => Some("No tunnel is set and the connection is not encrypted. Your network can see which mailboxes you use and when you use them. Use a .onion or .i2p relay, or use --vpn with IP:PORT#KEY"),
         };
         if let Some(why) = problem {
             if !risk {
-                return Err(format!("refusing relay {name}: {why}.\n(--i-accept-the-risk overrides this; development only.)"));
+                return Err(format!("Relay {name} refused. {why}.\nTo allow it, add --i-accept-the-risk. Use this option for development only."));
             }
-            warn.push(format!("{name}: {why}."));
+            warn.push(format!("Relay {name}: {why}."));
         }
     }
     Ok(warn)
