@@ -4,12 +4,14 @@
 
 pub mod cell;
 pub mod crypto;
-
+pub mod dm;
 pub mod identity;
+pub mod pgp;
 pub mod pow;
-
+pub mod ratchet;
 pub mod wire;
 pub mod words;
+pub mod x3dh;
 
 /// Every error is deliberately vague: details could leak through UI or logs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

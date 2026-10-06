@@ -104,7 +104,9 @@ fn status(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
     parts.push(vec![Span::styled(tor_s, tor_style)]);
     parts.push(vec![Span::styled(if app.cover { "cover ON" } else { "cover off" }, p.s(BASE))]);
     let v = app.view();
+    let mut union_at = usize::MAX;
     if let (ViewKind::Union, Some(end)) = (v.kind, v.ends_at) {
+        union_at = parts.len();
         let left = end.saturating_sub(now());
         let st = if left <= 60 { p.accent().add_modifier(Modifier::BOLD) } else { p.s(BASE) };
         parts.push(vec![Span::styled(format!("union ends {}", fmt_duration(left)), st)]);
@@ -115,20 +117,35 @@ fn status(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
         parts.push(vec![Span::styled("swap: exposed", p.dim())]);
     }
     parts.push(vec![Span::styled(if app.vault { "vault" } else { "ram-only" }, p.dim())]);
-    // Fit to width: drop trailing parts first.
-    let width = r.width as usize;
-    let mut spans: Vec<Span> = Vec::new();
-    let mut used = 0usize;
-    for (i, part) in parts.into_iter().enumerate() {
-        let w: usize = part.iter().map(|s| s.content.chars().count()).sum::<usize>() + if i > 0 { 3 } else { 0 };
-        if used + w > width {
-            break;
+    // Fit to width by priority (identity and the union countdown always stay),
+    // then render in the original order.
+    let prio = |i: usize, n: usize| -> usize {
+        match i {
+            0 => 0,
+            _ if i == union_at => 1,
+            1 => 2,
+            2 => 3,
+            _ => 4 + n - i,
         }
-        if i > 0 {
+    };
+    let n = parts.len();
+    let widths: Vec<usize> = parts.iter().map(|p| p.iter().map(|s| s.content.chars().count()).sum::<usize>() + 3).collect();
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by_key(|i| prio(*i, n));
+    let mut keep = vec![false; n];
+    let mut used = 0usize;
+    for i in order {
+        if used + widths[i] <= r.width as usize + 3 {
+            keep[i] = true;
+            used += widths[i];
+        }
+    }
+    let mut spans: Vec<Span> = Vec::new();
+    for (_, part) in parts.into_iter().enumerate().filter(|(i, _)| keep[*i]) {
+        if !spans.is_empty() {
             spans.push(sep.clone());
         }
         spans.extend(part);
-        used += w;
     }
     f.render_widget(Paragraph::new(TLine::from(spans)), r);
 }

@@ -174,6 +174,22 @@ impl Mask {
         }
         fresh
     }
+    /// Mint a fresh generation of one-time prekeys, keeping at most two generations
+    /// (older relay copies may still be taken until they expire).
+    pub fn rotate_opks(&mut self) -> Vec<(u32, [u8; 32])> {
+        let mut fresh = Vec::new();
+        for _ in 0..MAX_OPKS {
+            let id = self.next_opk;
+            self.next_opk += 1;
+            let sk = StaticSecret::random_from_rng(OsRng);
+            fresh.push((id, PublicKey::from(&sk).to_bytes()));
+            self.opks.push((id, sk));
+        }
+        let excess = self.opks.len().saturating_sub(2 * MAX_OPKS);
+        self.opks.drain(..excess);
+        fresh
+    }
+
     /// One-time prekeys are consumed exactly once.
     pub fn take_opk(&mut self, id: u32) -> Option<StaticSecret> {
         let i = self.opks.iter().position(|(k, _)| *k == id)?;

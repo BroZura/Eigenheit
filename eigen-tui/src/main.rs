@@ -1,16 +1,68 @@
 #![deny(unsafe_code)]
+//! eigen — mine, not yours, not theirs.
 use std::io::{stdout, Write};
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags};
+use crossterm::execute;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
-use crossterm::{event::KeyboardEnhancementFlags, execute};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use tokio::sync::mpsc;
 
 use eigen_core::identity::Mask;
-use eigen_tui::app::{Action, App, MaskInfo, Mode, View, ViewKind};
+use eigen_tui::app::{Action, App, Mode};
+use eigen_tui::engine::{Engine, Net, NetCfg, NetEvent};
+use eigen_tui::tor::RelayAddr;
 use eigen_tui::{harden, ui};
+
+const USAGE: &str = "eigen [--relay HOST:PORT]... [--tor-socks 127.0.0.1:9050] [--i-accept-the-risk]
+      [--cover] [--cover-ms 500] [--delay-ms 1500] [--vault PATH] [--no-boot]
+
+  Default: RAM-only. Nothing touches the disk.
+  Relays must be .onion addresses (reached through tor) unless --i-accept-the-risk.";
+
+pub struct Opts {
+    relays: Vec<RelayAddr>,
+    socks: String,
+    risk: bool,
+    cover: bool,
+    cover_ms: u64,
+    delay_ms: u64,
+    vault: Option<String>,
+    boot: bool,
+}
+
+fn parse_args() -> Result<Opts, String> {
+    let mut o = Opts { relays: Vec::new(), socks: "127.0.0.1:9050".into(), risk: false, cover: false, cover_ms: 500, delay_ms: 1500, vault: None, boot: true };
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        let mut val = || args.next().ok_or_else(|| USAGE.to_string());
+        match a.as_str() {
+            "--relay" => o.relays.push(RelayAddr::parse(&val()?).ok_or("relay must be HOST:PORT")?),
+            "--tor-socks" => o.socks = val()?,
+            "--i-accept-the-risk" => o.risk = true,
+            "--cover" => o.cover = true,
+            "--cover-ms" => o.cover_ms = val()?.parse().map_err(|_| USAGE)?,
+            "--delay-ms" => o.delay_ms = val()?.parse().map_err(|_| USAGE)?,
+            "--vault" => o.vault = Some(val()?),
+            "--ram-only" => o.vault = None,
+            "--no-boot" => o.boot = false,
+            _ => return Err(USAGE.into()),
+        }
+    }
+    if !o.risk {
+        if let Some(r) = o.relays.iter().find(|r| !r.is_onion()) {
+            return Err(format!(
+                "refusing clear-net relay {}:{}.\nOver clear-net, my network sees which mailboxes I touch and when.\nUse a .onion relay, or pass --i-accept-the-risk (development only).",
+                r.host, r.port
+            ));
+        }
+    }
+    Ok(o)
+}
 
 struct TermGuard {
     enhanced: bool,
@@ -27,44 +79,60 @@ impl Drop for TermGuard {
     }
 }
 
+enum Ev {
+    Key(KeyEvent),
+    Resize,
+}
+
 fn main() {
+    let opts = match parse_args() {
+        Ok(o) => o,
+        Err(e) => {
+            println!("{e}");
+            std::process::exit(2);
+        }
+    };
     let hard = harden::apply();
-    let color = std::env::var_os("NO_COLOR").map(|v| v.is_empty()).unwrap_or(true);
-    let mut app = App::new(color);
-    app.locked = hard.locked;
-    let mut masks = vec![Mask::generate()];
-    app.masks.push(MaskInfo { who: masks[0].who() });
-    if std::env::args().any(|a| a == "--mock") {
-        mock(&mut app);
-    }
-    let burned = run(&mut app, &mut masks).unwrap_or_default();
-    drop(masks);
+    let rt = match tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build() {
+        Ok(r) => r,
+        Err(_) => std::process::exit(1),
+    };
+    let burned = rt.block_on(run(opts, hard)).unwrap_or(false);
+    rt.shutdown_timeout(Duration::from_millis(200));
     if burned {
         let mut out = stdout();
-        let _ = out.write_all(b"\x1b[H\x1b[2J\x1b[3J");
+        // Clear screen and scrollback where the terminal allows it.
+        let _ = out.write_all(b"\x1b[H\x1b[2J\x1b[3J\x1bc");
         let _ = out.flush();
     }
 }
 
-fn mock(app: &mut App) {
-    use eigen_core::identity::Who;
-    let others: Vec<Who> = (0..3).map(|_| Mask::generate().who()).collect();
-    let mut v = View::new(10, ViewKind::Union, "union ochre-heron-1a2b".into(), 0);
-    v.who = Some(others[0]);
-    v.ends_at = Some(eigen_core::now() + 3 * 3600 + 41 * 60);
-    app.add_view(v);
-    app.notice(10, "the union holds 3. it dissolves unless renewed.");
-    for (i, t) in ["no names here, only keys.", "the relay holds nothing but expiring noise.", "agreed. renew at dusk."].iter().enumerate() {
-        app.push(10, eigen_tui::app::Line { from: Some(others[i]), text: t.to_string(), kind: eigen_tui::app::LineKind::Msg, at: 0, expires: None });
+async fn run(opts: Opts, hard: harden::Hardening) -> std::io::Result<bool> {
+    let color = std::env::var_os("NO_COLOR").map(|v| v.is_empty()).unwrap_or(true);
+    let mut app = App::new(color);
+    app.locked = hard.locked;
+    app.cover = opts.cover;
+    if !opts.boot {
+        app.mode = Mode::Normal;
     }
-    let mut d = View::new(11, ViewKind::Dm, others[1].name(), 0);
-    d.who = Some(others[1]);
-    app.add_view(d);
-    app.notice(11, "forward secret. words live 01:00:00.");
-    app.active = 1;
-}
+    let (ntx, mut nrx) = mpsc::unbounded_channel::<NetEvent>();
+    let net = Net::new(NetCfg {
+        socks: if opts.relays.iter().all(|r| r.is_onion()) && !opts.relays.is_empty() { Some(opts.socks.clone()) } else { None },
+        relays: opts.relays.clone(),
+        cover: Arc::new(AtomicBool::new(opts.cover)),
+        cover_ms: opts.cover_ms,
+        delay_ms: opts.delay_ms,
+    });
+    let mut engine = Engine::new(net, ntx);
+    let first = engine.add_mask(Mask::generate(), &mut app);
+    app.active_mask = first;
+    let me = app.masks[first].who.name();
+    app.notice(0, format!("I am {me}. generated here, known nowhere."));
+    if opts.relays.is_empty() {
+        app.notice(0, "no relays given: I can speak to nobody. start with --relay <onion>:<port>.");
+    }
+    app.notice(0, "nothing is written to disk. /help for what is mine to do.");
 
-fn run(app: &mut App, masks: &mut Vec<Mask>) -> std::io::Result<bool> {
     enable_raw_mode()?;
     let mut out = stdout();
     execute!(out, EnterAlternateScreen)?;
@@ -72,7 +140,28 @@ fn run(app: &mut App, masks: &mut Vec<Mask>) -> std::io::Result<bool> {
         && execute!(out, crossterm::event::PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)).is_ok();
     let _guard = TermGuard { enhanced };
     let mut term = Terminal::new(CrosstermBackend::new(stdout()))?;
-    let boot_until = Instant::now() + Duration::from_millis(1400);
+
+    let (ktx, mut krx) = mpsc::unbounded_channel::<Ev>();
+    std::thread::spawn(move || loop {
+        if ktx.is_closed() {
+            return;
+        }
+        if let Ok(true) = event::poll(Duration::from_millis(100)) {
+            match event::read() {
+                Ok(Event::Key(k)) if k.kind != KeyEventKind::Release => {
+                    let _ = ktx.send(Ev::Key(k));
+                }
+                Ok(Event::Resize(..)) => {
+                    let _ = ktx.send(Ev::Resize);
+                }
+                _ => {}
+            }
+        }
+    });
+
+    let boot_until = Instant::now() + Duration::from_millis(1600);
+    let mut frame = tokio::time::interval(Duration::from_millis(200));
+    let mut last_tick = 0u64;
     loop {
         if let Mode::Boot(_) = app.mode {
             if Instant::now() >= boot_until {
@@ -85,36 +174,37 @@ fn run(app: &mut App, masks: &mut Vec<Mask>) -> std::io::Result<bool> {
             }
             app.mode = Mode::Burning(n + 1);
         }
-        app.expire();
-        term.draw(|f| ui::draw(f, app))?;
-        let wait = if matches!(app.mode, Mode::Burning(_)) { 45 } else { 200 };
-        if event::poll(Duration::from_millis(wait))? {
-            match event::read()? {
-                Event::Key(k) if k.kind != KeyEventKind::Release => key(app, k),
-                Event::Resize(..) => term.clear()?,
-                _ => {}
-            }
+        term.draw(|f| ui::draw(f, &app))?;
+        let burning = matches!(app.mode, Mode::Burning(_));
+        tokio::select! {
+            Some(ev) = krx.recv() => match ev {
+                Ev::Key(k) => key(&mut app, k),
+                Ev::Resize => term.clear()?,
+            },
+            Some(ne) = nrx.recv(), if !burning => engine.on_net(ne, &mut app),
+            _ = frame.tick() => {}
+            _ = tokio::time::sleep(Duration::from_millis(45)), if burning => {}
+        }
+        let t = eigen_core::now();
+        if t != last_tick && !burning {
+            last_tick = t;
+            engine.tick(&mut app);
+            app.expire();
         }
         for a in std::mem::take(&mut app.outbox) {
             match a {
-                Action::NewMask => {
-                    masks.push(Mask::generate());
-                    app.masks.push(MaskInfo { who: masks.last().map(|m| m.who()).unwrap_or(eigen_core::identity::Who([0; 32])) });
-                    app.active_mask = masks.len() - 1;
-                    app.here_notice("a fresh mask. nothing links it to the others.");
-                }
-                Action::SwitchMask(i) => app.active_mask = i,
                 Action::Burn => {
-                    masks.clear();
+                    // Wipe first, animate after: the burn is already done when the screen decays.
+                    engine.burn();
                     app.views.truncate(1);
+                    app.views[0].lines.clear();
+                    app.masks.clear();
+                    app.input.clear();
                     app.mode = Mode::Burning(0);
                 }
                 Action::Quit => return Ok(false),
-                _ => app.here_notice("not yet — no relay in M1."),
+                other => engine.act(other, &mut app),
             }
-        }
-        if app.quit {
-            return Ok(false);
         }
     }
 }
@@ -142,10 +232,12 @@ fn key(app: &mut App, k: KeyEvent) {
         Mode::Normal => {}
     }
     match (k.code, ctrl) {
-        (KeyCode::Char('c'), true) => app.outbox.push(Action::Quit),
+        (KeyCode::Char('c'), true) | (KeyCode::Char('d'), true) => app.outbox.push(Action::Quit),
         (KeyCode::Char('l'), true) => {}
         (KeyCode::Char('u'), true) => app.outbox.push(Action::NewUnion { passphrase: None }),
         (KeyCode::Char('m'), true) => app.outbox.push(Action::NewMask),
+        (KeyCode::Char('n'), true) => app.cycle(1),
+        (KeyCode::Char('p'), true) => app.cycle(-1),
         (KeyCode::F(1), _) => app.mode = Mode::Help,
         (KeyCode::Tab, _) => app.cycle(1),
         (KeyCode::BackTab, _) => app.cycle(-1),

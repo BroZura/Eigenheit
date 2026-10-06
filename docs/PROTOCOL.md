@@ -54,17 +54,17 @@ Alice FETCHes Bob's newest valid bundle, TAKEs an OPK (optional), makes `EK`.
 `DH1 = DH(IKa, SPKb)`, `DH2 = DH(EKa, IKb)`, `DH3 = DH(EKa, SPKb)`, `DH4 = DH(EKa, OPKb)`.
 `SK = KDF(0³², 0xFF³² ‖ DH1 ‖ DH2 ‖ DH3 [‖ DH4], "eigen/x3dh", 32)`. `AD = edA ‖ IKa ‖ edB ‖ IKb`.
 Initial blob at `I`:
-`0x01 ‖ EKa:32 ‖ spk_id:u32 ‖ opk_id:u32 (0xFFFFFFFF = none) ‖ seal_fixed(K0, edA ‖ IKa ‖ Sig(skA, "eigen/bind" ‖ IKa ‖ EKa) ‖ ratchet_msg, 700)`
+`0x01 ‖ EKa:32 ‖ spk_id:u32 ‖ opk_id:u32 (0xFFFFFFFF = none) ‖ seal_fixed(K0, edA ‖ IKa ‖ Sig(skA, "eigen/bind" ‖ IKa ‖ EKa) ‖ ratchet_msg, 720)` (AAD = the 41 header bytes)
 with `K0 = KDF(0, DH(EKa, SPKb), "eigen/seal", 32)`. Alice repeats this format until she has received a reply. Bob dedupes sessions by `EKa`.
 
 ## Double Ratchet
 Per the Signal specification with `KDF_RK(rk, dh) = KDF(rk, dh, "eigen/rk", 64)`, `KDF_CK(ck) = (HMAC-SHA256(ck, 0x02), HMAC-SHA256(ck, 0x01))`, `MAX_SKIP = 256`. Bob's signed prekey is his initial ratchet key. Message: `header = dh:32 ‖ pn:u32 ‖ n:u32`, `ct = AEAD(mk → KDF(0, mk, "eigen/mk", 56) = key ‖ nonce, pt, AD ‖ header)`. Message keys are consumed on use and cannot be derived twice.
 
-Ratchet plaintext (padded to 640): `kind:u8 ‖ ttl:u32 ‖ reply_mbox_secret:32 ‖ len:u16 ‖ text`. kind 1 = text, 2 = hello (empty text).
+Ratchet plaintext (padded to 512): `kind:u8 ‖ ttl:u32 ‖ reply_mbox_secret:32 ‖ len:u16 ‖ text`. kind 1 = text, 2 = hello (empty text).
 
 ## DM transport
 Each side announces a receive mailbox secret `m`. `id = H("eigen/mbox" ‖ m)`, `Km = KDF(0, m, "eigen/mbox-key", 32)`.
-Blob: `0x02 ‖ seal_fixed(Km, header ‖ len:u16 ‖ ct, 760)`. A side mints a new `m` whenever it starts a new sending chain and keeps polling old ones for 15 min.
+Blob: `0x02 ‖ seal_fixed(Km, header ‖ ct, 600)` (AAD = mailbox id). A side mints a new `m` whenever it starts a new sending chain and keeps polling old ones for 15 min.
 
 ## Unions
 Secret `S:32` (random, or `Argon2id(passphrase, "eigen/union-pass/v1", m=64 MiB, t=3)`).

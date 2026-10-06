@@ -166,6 +166,7 @@ async fn run(cfg: LinkCfg, mut rx: mpsc::UnboundedReceiver<Job>, state: Arc<Atom
             }
         });
         let mut rid: u32 = random_u64() as u32;
+        let mut quit = false;
         let mut tick = tokio::time::interval(jitter(cfg.cover_ms.max(50)));
         loop {
             let cover = cfg.cover.load(Ordering::Relaxed);
@@ -176,13 +177,17 @@ async fn run(cfg: LinkCfg, mut rx: mpsc::UnboundedReceiver<Job>, state: Arc<Atom
                     _ = tick.tick() => {
                         tick.reset_after(jitter(cfg.cover_ms.max(50)));
                         // Exactly one cell per tick: real work if queued, else padding.
-                        rx.try_recv().ok()
+                        match rx.try_recv() {
+                            Ok(j) => Some(j),
+                            Err(mpsc::error::TryRecvError::Empty) => None,
+                            Err(mpsc::error::TryRecvError::Disconnected) => { quit = true; break }
+                        }
                     }
                     _ = &mut reader => break,
                 }
             } else {
                 tokio::select! {
-                    j = rx.recv() => match j { Some(j) => Some(j), None => return },
+                    j = rx.recv() => match j { Some(j) => Some(j), None => { quit = true; break } },
                     _ = tokio::time::sleep(Duration::from_secs(120)) => None, // keepalive pad
                     _ = &mut reader => break,
                 }
@@ -213,6 +218,9 @@ async fn run(cfg: LinkCfg, mut rx: mpsc::UnboundedReceiver<Job>, state: Arc<Atom
         }
         reader.abort();
         pending.lock().await.clear();
+        if quit {
+            return;
+        }
         state.store(2, Ordering::Relaxed);
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
