@@ -19,3 +19,4 @@ libc.workspace = true
 
 [dev-dependencies]
 eigen-relay = { path = "../eigen-relay" }
+tokio = { workspace = true, features = ["test-util"] }

@@ -2,18 +2,14 @@
 //! No I/O lives here. Everything is deterministic given the RNG.
 #![forbid(unsafe_code)]
 
-
+pub mod cell;
 pub mod crypto;
 
 pub mod identity;
-
-
-
-
+pub mod pow;
 
 pub mod wire;
 pub mod words;
-
 
 /// Every error is deliberately vague: details could leak through UI or logs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

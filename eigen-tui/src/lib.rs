@@ -3,4 +3,6 @@
 
 pub mod app;
 pub mod harden;
+pub mod net;
+pub mod tor;
 pub mod ui;
