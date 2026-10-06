@@ -117,7 +117,7 @@ async fn run(opts: Opts, hard: harden::Hardening) -> std::io::Result<bool> {
     }
     let (ntx, mut nrx) = mpsc::unbounded_channel::<NetEvent>();
     let net = Net::new(NetCfg {
-        socks: if opts.relays.iter().all(|r| r.is_onion()) && !opts.relays.is_empty() { Some(opts.socks.clone()) } else { None },
+        socks: Some(opts.socks.clone()),
         relays: opts.relays.clone(),
         cover: Arc::new(AtomicBool::new(opts.cover)),
         cover_ms: opts.cover_ms,

@@ -73,6 +73,42 @@ impl RelayAddr {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn socks5_handshake_carries_isolation() {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap().to_string();
+        let srv = tokio::spawn(async move {
+            let (mut s, _) = l.accept().await.unwrap();
+            let mut g = [0u8; 3];
+            s.read_exact(&mut g).await.unwrap();
+            assert_eq!(g, [5, 1, 2]);
+            s.write_all(&[5, 2]).await.unwrap();
+            let mut h = [0u8; 2];
+            s.read_exact(&mut h).await.unwrap();
+            let mut user = vec![0u8; h[1] as usize];
+            s.read_exact(&mut user).await.unwrap();
+            let mut pl = [0u8; 1];
+            s.read_exact(&mut pl).await.unwrap();
+            let mut pass = vec![0u8; pl[0] as usize];
+            s.read_exact(&mut pass).await.unwrap();
+            s.write_all(&[1, 0]).await.unwrap();
+            let mut c = [0u8; 5];
+            s.read_exact(&mut c).await.unwrap();
+            let mut host = vec![0u8; c[4] as usize + 2];
+            s.read_exact(&mut host).await.unwrap();
+            s.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await.unwrap();
+            s.write_all(b"ok").await.unwrap();
+            (String::from_utf8(user).unwrap(), String::from_utf8(host[..host.len() - 2].to_vec()).unwrap())
+        });
+        let mut s = connect(&addr, "x.onion", 7777, "circuit-a").await.unwrap();
+        let mut ok = [0u8; 2];
+        s.read_exact(&mut ok).await.unwrap();
+        assert_eq!(&ok, b"ok");
+        let (user, host) = srv.await.unwrap();
+        assert_eq!(user, "circuit-a");
+        assert_eq!(host, "x.onion");
+    }
+
     #[test]
     fn parse_addrs() {
         let a = RelayAddr::parse("abc.onion:7777").unwrap();

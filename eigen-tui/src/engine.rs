@@ -61,7 +61,8 @@ impl Net {
                     .map(|r| {
                         Link::spawn(LinkCfg {
                             relay: r.clone(),
-                            socks: cfg.socks.clone(),
+                            // Onion relays only through tor; clear-net only exists with consent.
+                            socks: if r.is_onion() { cfg.socks.clone() } else { None },
                             isolation: eigen_core::wire::hex(&random::<12>()),
                             cover: cfg.cover.clone(),
                             cover_ms: cfg.cover_ms,
@@ -199,7 +200,7 @@ impl Engine {
             TorState::Off
         } else if !self.net.any_up() {
             TorState::Connecting
-        } else if self.net.cfg.socks.is_some() {
+        } else if self.net.cfg.relays.iter().all(|r| r.is_onion()) {
             TorState::Up
         } else {
             TorState::ClearNet

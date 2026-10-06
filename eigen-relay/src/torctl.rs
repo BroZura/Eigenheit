@@ -53,3 +53,35 @@ async fn cmd(s: &mut BufReader<TcpStream>, line: &str) -> io::Result<Vec<String>
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncReadExt;
+
+    #[tokio::test]
+    async fn add_onion_against_mock_control_port() {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap().to_string();
+        let srv = tokio::spawn(async move {
+            let (s, _) = l.accept().await.unwrap();
+            let mut s = BufReader::new(s);
+            let mut seen = Vec::new();
+            for reply in ["250-PROTOCOLINFO 1\r\n250-AUTH METHODS=NULL\r\n250 OK\r\n", "250 OK\r\n", "250-ServiceID=abcdef\r\n250 OK\r\n"] {
+                let mut line = String::new();
+                s.read_line(&mut line).await.unwrap();
+                seen.push(line.trim().to_string());
+                s.get_mut().write_all(reply.as_bytes()).await.unwrap();
+            }
+            let mut rest = Vec::new();
+            let _ = s.read_to_end(&mut rest).await;
+            seen
+        });
+        let (onion, ctl) = add_onion(&addr, None, 7777).await.unwrap();
+        assert_eq!(onion, "abcdef.onion");
+        drop(ctl);
+        let seen = srv.await.unwrap();
+        assert_eq!(seen[1], "AUTHENTICATE");
+        assert!(seen[2].contains("Flags=DiscardPK") && seen[2].contains("Port=7777,127.0.0.1:7777"));
+    }
+}
