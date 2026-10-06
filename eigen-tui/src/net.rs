@@ -13,6 +13,7 @@ use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::tor::{self, RelayAddr};
+use eigen_transport::{device, noise, sam};
 
 #[derive(Clone, Debug)]
 pub struct LinkCfg {
@@ -26,6 +27,10 @@ pub struct LinkCfg {
     pub cover_ms: u64,
     /// Without cover: PUTs wait a random 0..max_delay_ms before release.
     pub max_delay_ms: u64,
+    /// I2P SAM bridge, for `.i2p` relays. Each link gets its own transient destination.
+    pub sam: Option<String>,
+    /// VPN/WireGuard interface every direct connection is bound to (fails closed).
+    pub device: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,13 +148,47 @@ impl Link {
     }
 }
 
-async fn connect(cfg: &LinkCfg) -> std::io::Result<TcpStream> {
-    let s = match &cfg.socks {
-        Some(socks) => tor::connect(socks, &cfg.relay.host, cfg.relay.port, &cfg.isolation).await?,
-        None => TcpStream::connect((cfg.relay.host.as_str(), cfg.relay.port)).await?,
+struct Conn {
+    sock: TcpStream,
+    noise: Option<Arc<noise::Link>>,
+    /// The I2P session must outlive the stream it carries.
+    _sam: Option<sam::Session>,
+}
+
+async fn connect(cfg: &LinkCfg) -> std::io::Result<Conn> {
+    let r = &cfg.relay;
+    let (mut sock, session) = if r.is_onion() {
+        let socks = cfg
+            .socks
+            .as_deref()
+            .ok_or_else(|| std::io::Error::other("onion relay needs tor"))?;
+        (
+            tor::connect(socks, &r.host, r.port, &cfg.isolation).await?,
+            None,
+        )
+    } else if r.is_i2p() {
+        let bridge = cfg
+            .sam
+            .as_deref()
+            .ok_or_else(|| std::io::Error::other("i2p relay needs a SAM bridge"))?;
+        let s = sam::Session::create(bridge).await?;
+        (s.connect(&r.host).await?, Some(s))
+    } else {
+        (
+            device::connect(&r.host, r.port, cfg.device.as_deref()).await?,
+            None,
+        )
     };
-    let _ = s.set_nodelay(true);
-    Ok(s)
+    let _ = sock.set_nodelay(true);
+    let noise = match &r.key {
+        Some(k) => Some(Arc::new(noise::initiate(&mut sock, k).await?)),
+        None => None,
+    };
+    Ok(Conn {
+        sock,
+        noise,
+        _sam: session,
+    })
 }
 
 async fn run(cfg: LinkCfg, mut rx: mpsc::UnboundedReceiver<Job>, state: Arc<AtomicU8>) {
@@ -157,7 +196,9 @@ async fn run(cfg: LinkCfg, mut rx: mpsc::UnboundedReceiver<Job>, state: Arc<Atom
     let mut held: Option<Job> = None;
     loop {
         state.store(0, Ordering::Relaxed);
-        let sock = match tokio::time::timeout(Duration::from_secs(60), connect(&cfg)).await {
+        // I2P tunnels can take a while to build.
+        let wait = if cfg.relay.is_i2p() { 180 } else { 60 };
+        let conn = match tokio::time::timeout(Duration::from_secs(wait), connect(&cfg)).await {
             Ok(Ok(s)) => s,
             _ => {
                 state.store(2, Ordering::Relaxed);
@@ -175,14 +216,32 @@ async fn run(cfg: LinkCfg, mut rx: mpsc::UnboundedReceiver<Job>, state: Arc<Atom
         };
         backoff = 1;
         state.store(1, Ordering::Relaxed);
+        let Conn { sock, noise, _sam } = conn;
         let (mut rd, mut wr) = sock.into_split();
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
         let p2 = pending.clone();
+        let rnoise = noise.clone();
         let mut reader = tokio::spawn(async move {
             let mut cell = [0u8; CELL];
+            let mut frame = [0u8; noise::FRAME];
+            let mut rn = 0u64;
             loop {
-                if rd.read_exact(&mut cell).await.is_err() {
-                    return;
+                match &rnoise {
+                    Some(l) => {
+                        if rd.read_exact(&mut frame).await.is_err() {
+                            return;
+                        }
+                        match l.open(rn, &frame) {
+                            Ok(c) => cell = c,
+                            Err(_) => return,
+                        }
+                        rn += 1;
+                    }
+                    None => {
+                        if rd.read_exact(&mut cell).await.is_err() {
+                            return;
+                        }
+                    }
                 }
                 if let Ok(r) = Response::decode(&cell) {
                     if let Some(tx) = p2.lock().await.remove(&r.rid) {
@@ -193,6 +252,7 @@ async fn run(cfg: LinkCfg, mut rx: mpsc::UnboundedReceiver<Job>, state: Arc<Atom
         });
         let mut rid: u32 = random_u64() as u32;
         let mut quit = false;
+        let mut wn = 0u64;
         let mut tick = tokio::time::interval(jitter(cfg.cover_ms.max(50)));
         loop {
             let cover = cfg.cover.load(Ordering::Relaxed);
@@ -244,7 +304,17 @@ async fn run(cfg: LinkCfg, mut rx: mpsc::UnboundedReceiver<Job>, state: Arc<Atom
             if let Some(r) = reply {
                 pending.lock().await.insert(rid, r);
             }
-            if wr.write_all(&cell).await.is_err() {
+            let sent = match &noise {
+                Some(l) => match l.seal(wn, &cell) {
+                    Ok(f) => {
+                        wn += 1;
+                        wr.write_all(&f).await
+                    }
+                    Err(e) => Err(e),
+                },
+                None => wr.write_all(&cell).await,
+            };
+            if sent.is_err() {
                 // Re-queue the job that did not make it.
                 if let Some(r) = pending.lock().await.remove(&rid) {
                     held = Some(Job { op, reply: r });
@@ -279,6 +349,7 @@ pub mod testutil {
         RelayAddr {
             host: "127.0.0.1".into(),
             port,
+            key: None,
         }
     }
 
@@ -290,6 +361,8 @@ pub mod testutil {
             cover: Arc::new(AtomicBool::new(cover)),
             cover_ms: 20,
             max_delay_ms: 5,
+            sam: None,
+            device: None,
         }
     }
 }
@@ -346,6 +419,7 @@ mod tests {
             RelayAddr {
                 host: "127.0.0.1".into(),
                 port,
+                key: None,
             },
             true,
         );
@@ -356,5 +430,58 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(1000)).await;
         let n = counter.load(Ordering::Relaxed) - start;
         assert!((12..=30).contains(&n), "{n} cells in 1s at 50ms ±30%");
+    }
+
+    /// A VPN/WireGuard-style route: Noise-encrypted link, socket bound to an
+    /// interface (`lo` stands in for `wg0` here).
+    #[tokio::test]
+    async fn noise_link_bound_to_interface() {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        let key = eigen_transport::noise::RelayKey::generate().unwrap();
+        let public = key.public;
+        let relay = eigen_relay::Relay::start(eigen_relay::Config {
+            pow_base: 4,
+            ..Default::default()
+        });
+        tokio::spawn(relay.serve_noise(l, Arc::new(key)));
+        let mut c = cfg(
+            RelayAddr {
+                host: "127.0.0.1".into(),
+                port,
+                key: Some(public),
+            },
+            false,
+        );
+        c.device = Some("lo".into());
+        let link = Link::spawn(c);
+        let m = [3u8; 32];
+        link.put(
+            m,
+            60,
+            eigen_core::cell::blob(b"through the tunnel").unwrap(),
+            6,
+        )
+        .await
+        .unwrap();
+        let all = link.fetch_all(m, 0, 10).await.unwrap();
+        assert_eq!(&all[0].blob[..18], b"through the tunnel");
+        // Wrong key: the link never comes up (relay impersonation fails).
+        let mut bad = cfg(
+            RelayAddr {
+                host: "127.0.0.1".into(),
+                port,
+                key: Some([9u8; 32]),
+            },
+            false,
+        );
+        bad.device = Some("lo".into());
+        let bad = Link::spawn(bad);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), bad.call(Op::Pad))
+                .await
+                .map(|r| r.is_err())
+                .unwrap_or(true)
+        );
     }
 }

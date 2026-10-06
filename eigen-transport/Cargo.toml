@@ -1,0 +1,14 @@
+[package]
+name = "eigen-transport"
+description = "EIGENHEIT transports: Noise-encrypted relay links, I2P SAM, interface-bound dialing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+eigen-core = { path = "../eigen-core" }
+tokio.workspace = true
+snow.workspace = true
+sha2.workspace = true
+zeroize.workspace = true

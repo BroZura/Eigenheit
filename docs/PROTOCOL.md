@@ -31,6 +31,11 @@ Response: `ver:u8 ‖ op:u8 ‖ rid:u32 ‖ status:u8 ‖ body`. Exactly one res
 | 3 POW | `need:u8` (difficulty required now) |
 | 4 FULL / 5 BAD | — |
 
+## Transports
+- **Tor**: plain cells over a SOCKS5 stream to `x.onion`; username = random per context (circuit isolation).
+- **I2P**: plain cells over a SAM v3 `STREAM CONNECT` from a per-context `TRANSIENT` destination (Ed25519, ECIES-X25519 lease sets).
+- **Direct (VPN/WireGuard)**: `Noise_NK_25519_ChaChaPoly_BLAKE2s`. Client → relay `e, es` (48 bytes), relay → client `e, ee` (48 bytes), empty payloads. Then each cell is one transport message with explicit per-direction nonces 0, 1, 2…: 1024-byte cell → 1040-byte frame. The relay's static key travels in the address: `IP:PORT#base32(key)`.
+
 ## Proof of work
 `pow = H("eigen/pow/v1" ‖ hour ‖ mbox ‖ H(blob) ‖ nonce)`; valid if it has ≥ `d` leading zero bits. `hour = unix_time / 3600`; relays accept current and previous hour. Relay: `d ≥ 12 + 2·⌊log2(1 + puts_last_60s(mbox)/16)⌋`. Receivers re-verify PoW against their own (union) minimum. Exact `(mbox, pow)` duplicates are rejected until expiry.
 

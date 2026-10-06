@@ -49,6 +49,45 @@ pub struct NetCfg {
     pub cover: Arc<AtomicBool>,
     pub cover_ms: u64,
     pub delay_ms: u64,
+    /// I2P SAM bridge for `.i2p` relays.
+    pub sam: Option<String>,
+    /// VPN/WireGuard interface that direct connections are bound to.
+    pub device: Option<String>,
+}
+
+impl NetCfg {
+    /// How I reach my relays, for the status bar, and whether any route exposes me.
+    pub fn describe(&self) -> (String, bool) {
+        let mut parts: Vec<String> = Vec::new();
+        let mut exposed = false;
+        for r in &self.relays {
+            let p = if r.is_onion() {
+                "tor".to_string()
+            } else if r.is_i2p() {
+                "i2p".to_string()
+            } else {
+                match (&self.device, r.key.is_some()) {
+                    (Some(d), true) => format!("vpn {d}"),
+                    (Some(d), false) => {
+                        exposed = true;
+                        format!("vpn {d} PLAIN")
+                    }
+                    (None, true) => {
+                        exposed = true;
+                        "CLEAR-NET noise".to_string()
+                    }
+                    (None, false) => {
+                        exposed = true;
+                        "CLEAR-NET".to_string()
+                    }
+                }
+            };
+            if !parts.contains(&p) {
+                parts.push(p);
+            }
+        }
+        (parts.join("+"), exposed)
+    }
 }
 
 /// Links per isolation context: each mask, each dm and each union gets its own
@@ -85,6 +124,8 @@ impl Net {
                             cover: cfg.cover.clone(),
                             cover_ms: cfg.cover_ms,
                             max_delay_ms: cfg.delay_ms,
+                            sam: cfg.sam.clone(),
+                            device: cfg.device.clone(),
                         })
                     })
                     .collect()
@@ -233,14 +274,16 @@ impl Engine {
     /// Called about once a second.
     pub fn tick(&mut self, app: &mut App) {
         let t = now();
+        let (label, exposed) = self.net.cfg.describe();
+        app.transport = label;
         app.tor = if self.net.cfg.relays.is_empty() {
             TorState::Off
         } else if !self.net.any_up() {
             TorState::Connecting
-        } else if self.net.cfg.relays.iter().all(|r| r.is_onion()) {
-            TorState::Up
-        } else {
+        } else if exposed {
             TorState::ClearNet
+        } else {
+            TorState::Up
         };
         // Publish bundles and one-time prekeys.
         for i in 0..self.masks.len() {
@@ -959,6 +1002,8 @@ pub mod harness {
                 cover: Arc::new(AtomicBool::new(false)),
                 cover_ms: 20,
                 delay_ms: 0,
+                sam: None,
+                device: None,
             });
             let mut e = Engine::new(net, tx);
             e.poll_secs = 0;

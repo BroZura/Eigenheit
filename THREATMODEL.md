@@ -13,7 +13,7 @@ What is mine is whatever I have power over. This document says exactly where tha
 
 | Adversary | Capability | Defense |
 |---|---|---|
-| Passive network observer (ISP, Wi-Fi) | Sees my packets | All relay traffic over Tor onion services. Fixed 1024-byte cells. Optional constant-rate cover traffic. |
+| Passive network observer (ISP, Wi-Fi) | Sees my packets | Relay traffic over Tor onion services, I2P, or a VPN/WireGuard tunnel with a Noise-encrypted link. Fixed 1024-byte cells (1040-byte Noise frames). Optional constant-rate cover traffic. |
 | Malicious / logging relay operator | Sees every cell it receives, keeps everything forever, can drop / replay / reorder / inject | Relay only sees opaque mailbox ids and fixed-size ciphertext. No sender field exists (sealed sender). Mailbox ids rotate (DM: per ratchet step; union: hourly). PoW nonces are bound to mailbox+blob+hour. Replays are rejected by the ratchet / sender-key indices. Fan-out over several relays defeats a single dropping relay. |
 | Compromised relay host (seizure) | Dumps RAM | Relay holds only ciphertext blobs with hard TTL (≤ 24 h). No disk, no logs, no wall-clock timestamps. |
 | Other union participants | See everything I say in the union, try to link my masks or find my IP | I appear only as the mask I chose for that union. Each mask/union uses a separate Tor circuit (SOCKS isolation). No presence, typing, read receipts, or "last seen". |
@@ -21,10 +21,12 @@ What is mine is whatever I have power over. This document says exactly where tha
 | Later seizure of my disk | Reads files | Default is RAM-only: nothing is written. Vault (opt-in) is Argon2id + XChaCha20-Poly1305, no header, fixed bucket size, indistinguishable from random. `/burn` overwrites and deletes it. |
 | Later compromise of my long-term keys | Has my identity keys | DMs: X3DH + Double Ratchet → forward secrecy and post-compromise security. Unions: sender-key chains are hash ratchets (forward secrecy within a chain); rotation on roster change. |
 | Anonymous spam / floods | Unlimited identities | Hashcash PoW on every PUT (relay minimum, rising with per-mailbox burst rate) and per-union minimums (higher for JOIN). Relay rate limits per mailbox and memory caps. |
-| Mask correlation | Links masks by timing / connection | One Tor circuit per mask/union. Cover traffic and random delivery delay blunt timing. Masks share no key material. |
+| VPN provider | Sees everything leaving my tunnel | Direct relays require a Noise link authenticated by the relay's key: the provider sees fixed-size frames to one IP, not mailbox ids. It does see *when* and *how much* (use cover traffic) and which relay. |
+| Mask correlation | Links masks by timing / connection | One Tor circuit / I2P destination per mask/DM/union. Cover traffic and random delivery delay blunt timing. Masks share no key material. |
 | Name impersonation | Grinds a key whose word-name matches mine (~2^32 work) | Names are handles, not authenticators. TOFU pins full keys; a second key with an already-seen name raises a loud warning. `/verify` gives a full fingerprint + SAS for out-of-band comparison. |
 
 ## Explicitly out of scope
+- **A VPN is not anonymity.** The VPN provider knows who I am (payment, account, IP) and when I talk to which relay; only the content and mailbox ids are hidden from it. Prefer Tor or I2P; use a VPN when they are blocked or as an extra hop.
 - **Global passive adversary** correlating Tor entry and exit/onion traffic at scale. Cover traffic raises the cost; it does not defeat this.
 - **Compromised endpoint**: malware, a compromised OS, a malicious terminal emulator, hardware keyloggers. If my machine is theirs, my keys are theirs.
 - **Rubber-hose cryptanalysis.** The duress passphrase helps against a naive search; an adversary who knows EIGENHEIT supports two vault slots can keep demanding passphrases. Deniability is weak — see `SECURITY.md`.

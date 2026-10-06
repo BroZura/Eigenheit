@@ -167,6 +167,8 @@ pub struct App {
     pub mode: Mode,
     pub scroll: usize,
     pub tor: TorState,
+    /// How I reach relays: "tor", "i2p", "vpn wg0", combinations.
+    pub transport: String,
     pub cover: bool,
     pub locked: bool,
     pub vault: bool,
@@ -276,6 +278,7 @@ impl App {
             mode: Mode::Boot(0),
             scroll: 0,
             tor: TorState::Off,
+            transport: String::new(),
             cover: false,
             locked: false,
             vault: false,

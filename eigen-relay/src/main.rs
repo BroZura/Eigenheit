@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 //! eigen-relay [--listen ADDR] [--onion] [--control ADDR] [--tor-password PW]
+//!             [--i2p] [--sam ADDR] [--public ADDR]
 //!             [--pow-base N] [--max-ttl SECS] [--quiet] [--self-test]
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -7,11 +8,19 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use eigen_core::cell::{Op, Request, Response, Status, CELL};
-use eigen_relay::{serve, torctl, Config};
+use eigen_relay::{torctl, Config, Relay};
+use eigen_transport::noise::RelayKey;
 
 fn usage() -> ! {
     // Usage goes to stdout only when asked for; exit code says the rest.
-    println!("eigen-relay [--listen 127.0.0.1:7777] [--onion] [--control 127.0.0.1:9051] [--tor-password PW] [--pow-base 12] [--max-ttl 86400] [--quiet] [--self-test]");
+    println!("eigen-relay [--listen 127.0.0.1:7777] [--onion] [--control 127.0.0.1:9051] [--tor-password PW]
+            [--i2p] [--sam 127.0.0.1:7656] [--public 0.0.0.0:7778]
+            [--pow-base 12] [--max-ttl 86400] [--quiet] [--self-test]
+
+  --listen  plain cells on loopback (behind tor / for development)
+  --onion   publish --listen as an ephemeral tor onion service
+  --i2p     publish an ephemeral I2P destination via the SAM bridge
+  --public  Noise-encrypted listener for clients on VPN/WireGuard; prints HOST:PORT#KEY");
     std::process::exit(2)
 }
 
@@ -21,7 +30,9 @@ fn main() {
     let mut listen = "127.0.0.1:7777".to_string();
     let mut control = "127.0.0.1:9051".to_string();
     let mut password: Option<String> = None;
-    let (mut onion, mut quiet) = (false, false);
+    let (mut onion, mut quiet, mut i2p) = (false, false, false);
+    let mut public: Option<String> = None;
+    let mut sam = eigen_transport::sam::DEFAULT_SAM.to_string();
     let mut cfg = Config::default();
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -31,6 +42,9 @@ fn main() {
             "--control" => control = val(),
             "--tor-password" => password = Some(val()),
             "--onion" => onion = true,
+            "--i2p" => i2p = true,
+            "--sam" => sam = val(),
+            "--public" => public = Some(val()),
             "--quiet" => quiet = true,
             "--pow-base" => cfg.pow_base = val().parse().unwrap_or_else(|_| usage()),
             "--max-ttl" => cfg.max_ttl = val().parse().unwrap_or_else(|_| usage()),
@@ -49,6 +63,10 @@ fn main() {
         let Ok(local) = listener.local_addr() else {
             std::process::exit(1)
         };
+        let relay = Relay::start(cfg);
+        if !onion && !quiet {
+            println!("eigen-relay at {local} (plain cells: behind tor, or development only)");
+        }
         // Keep the control connection alive: the onion service dies with it.
         let _ctl = if onion {
             match torctl::add_onion(&control, password.as_deref(), local.port()).await {
@@ -64,13 +82,38 @@ fn main() {
                 }
             }
         } else {
-            if !quiet {
-                println!("eigen-relay at {local} (clear-net: development only)");
-            }
             None
         };
+        // I2P: a transient destination, forgotten by the router when I exit.
+        if i2p {
+            match eigen_transport::sam::Session::create(&sam).await {
+                Ok(sess) => {
+                    let b32 = sess.b32().unwrap_or_default();
+                    if !quiet {
+                        println!("eigen-relay at {b32}");
+                    }
+                    tokio::spawn(relay.clone().serve_i2p(std::sync::Arc::new(sess)));
+                }
+                Err(_) => {
+                    println!("no i2p session from the SAM bridge at {sam} (router down, or it could not build tunnels)");
+                    std::process::exit(1)
+                }
+            }
+        }
+        // Public listener for VPN/WireGuard clients: Noise-encrypted, ephemeral key.
+        if let Some(addr) = &public {
+            let (Ok(key), Ok(pl)) = (RelayKey::generate(), tokio::net::TcpListener::bind(addr).await) else {
+                println!("cannot listen on {addr}");
+                std::process::exit(1)
+            };
+            if !quiet {
+                let at = pl.local_addr().map(|a| a.to_string()).unwrap_or_default();
+                println!("eigen-relay at {at}#{} (noise; use the address clients can reach)", key.encoded());
+            }
+            tokio::spawn(relay.clone().serve_noise(pl, std::sync::Arc::new(key)));
+        }
         let _ = std::io::stdout().flush();
-        serve(listener, cfg).await;
+        relay.serve_plain(listener).await;
     });
 }
 
@@ -81,7 +124,14 @@ fn self_test() -> i32 {
         return 1;
     };
     let mut child = match Command::new(exe)
-        .args(["--listen", "127.0.0.1:0", "--pow-base", "4"])
+        .args([
+            "--listen",
+            "127.0.0.1:0",
+            "--public",
+            "127.0.0.1:0",
+            "--pow-base",
+            "4",
+        ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -95,10 +145,17 @@ fn self_test() -> i32 {
     let mut first = String::new();
     let _ = out.read_line(&mut first);
     let addr = first.split_whitespace().nth(2).unwrap_or("").to_string();
+    let mut second = String::new();
+    let _ = out.read_line(&mut second);
+    let noise_at = second.split_whitespace().nth(2).unwrap_or("").to_string();
     let mut fails: Vec<String> = Vec::new();
     match drive(&addr) {
-        Ok(n) => println!("self-test: {n} cells exchanged"),
+        Ok(n) => println!("self-test: {n} plain cells exchanged"),
         Err(e) => fails.push(format!("traffic failed: {e}")),
+    }
+    match drive_noise(&noise_at) {
+        Ok(n) => println!("self-test: {n} noise frames exchanged"),
+        Err(e) => fails.push(format!("noise traffic failed: {e}")),
     }
     std::thread::sleep(Duration::from_millis(300));
     #[cfg(target_os = "linux")]
@@ -205,4 +262,49 @@ fn drive(addr: &str) -> std::io::Result<usize> {
     let mut r = [0u8; CELL];
     s.read_exact(&mut r)?;
     Ok(n + 1)
+}
+
+fn drive_noise(spec: &str) -> std::io::Result<usize> {
+    let (addr, key) = spec
+        .split_once('#')
+        .ok_or(std::io::ErrorKind::InvalidInput)?;
+    let key = eigen_transport::noise::parse_key(key).ok_or(std::io::ErrorKind::InvalidInput)?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(async {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut s = tokio::net::TcpStream::connect(addr).await?;
+        let link = eigen_transport::noise::initiate(&mut s, &key).await?;
+        let mut n = 0u64;
+        for i in 0..32u8 {
+            let mbox = eigen_core::crypto::h(&[&[i % 4, 9]]);
+            let blob =
+                eigen_core::cell::blob(&[i; 64]).map_err(|_| std::io::ErrorKind::InvalidData)?;
+            let hour = eigen_core::pow::hour_now();
+            let nonce = eigen_core::pow::solve(hour, &mbox, &blob, 10);
+            for op in [
+                Op::Put {
+                    mbox,
+                    ttl: 30,
+                    hour,
+                    nonce,
+                    blob,
+                },
+                Op::Fetch { mbox, after: 0 },
+                Op::Pad,
+            ] {
+                let c = Request { rid: n as u32, op }
+                    .encode()
+                    .map_err(|_| std::io::ErrorKind::InvalidData)?;
+                s.write_all(&link.seal(n, &c)?).await?;
+                let mut f = [0u8; eigen_transport::noise::FRAME];
+                s.read_exact(&mut f).await?;
+                Response::decode(&link.open(n, &f)?)
+                    .map_err(|_| std::io::ErrorKind::InvalidData)?;
+                n += 1;
+            }
+        }
+        Ok(n as usize)
+    })
 }

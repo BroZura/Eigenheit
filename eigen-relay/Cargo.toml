@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 eigen-core = { path = "../eigen-core" }
+eigen-transport = { path = "../eigen-transport" }
 tokio.workspace = true
 
 [lib]

@@ -32,20 +32,34 @@ cargo build --release --locked
 
 ## Run
 
-EIGENHEIT talks to relays **only through Tor onion services**. Run a local `tor` (SOCKS on `127.0.0.1:9050`, control port `9051` with `CookieAuthentication 1` for relay hosts).
+EIGENHEIT reaches relays in three ways, alone or mixed:
+
+| relay address | route | needs |
+|---|---|---|
+| `x.onion:7777` | Tor; one circuit per mask/DM/union | local `tor` (SOCKS `9050`; control `9051` with `CookieAuthentication 1` to host) |
+| `x.b32.i2p` | I2P; one transient destination per mask/DM/union | local i2pd or Java I2P with the SAM bridge on `7656` |
+| `IP:PORT#KEY` | direct, Noise-encrypted, bound to a VPN/WireGuard interface | `--vpn wg0` (or `--wireguard wg0`) |
+
+Anything else (plain clear-net, or a direct relay without tunnel or key) is refused unless `--i-accept-the-risk`.
 
 ```sh
-# Host a relay as an ephemeral onion service (its address dies with the process):
-eigen-relay --onion
-# → eigen-relay at abcd…xyz.onion:7777
+# Host a relay; every address is ephemeral and dies with the process:
+eigen-relay --onion                     # → eigen-relay at abcd…xyz.onion:7777
+eigen-relay --i2p                       # → eigen-relay at efgh…uvw.b32.i2p
+eigen-relay --public 10.8.0.1:7778      # → eigen-relay at 10.8.0.1:7778#KEY  (on the WireGuard address)
+eigen-relay --onion --i2p --public 10.8.0.1:7778   # all at once, one store
 
 # Chat through it:
 eigen --relay abcd…xyz.onion:7777
 eigen --relay abcd…xyz.onion:7777 --cover          # constant-rate cover traffic
 eigen --relay abcd…xyz.onion:7777 --vault ~/.x     # opt-in encrypted vault
+eigen --relay efgh…uvw.b32.i2p                      # through I2P
+eigen --wireguard wg0 --relay 10.8.0.1:7778#KEY     # through my WireGuard tunnel (fails closed)
 ```
 
-Several `--relay` flags fan out to several relays; relays are interchangeable and untrusted.
+Several `--relay` flags fan out to several relays (over different networks if I like); relays are interchangeable and untrusted.
+
+A VPN hides my IP from the relay; it does not make me anonymous to the VPN provider. Prefer Tor or I2P; see [THREATMODEL.md](THREATMODEL.md).
 
 ### Local development (two terminals, no Tor)
 
@@ -97,7 +111,8 @@ Keys: `Tab`/`Shift-Tab` (or `Ctrl-N`/`Ctrl-P`) switch, `PgUp`/`PgDn` scroll, `Ct
 
 ```
 eigen-core   crypto + protocol (identity, x3dh, ratchet, dm, union, cell, pow, vault, pgp)
-eigen-relay  RAM-only relay (+ --onion, --self-test)
+eigen-transport  Noise relay link, I2P SAM, interface-bound (VPN) dialing
+eigen-relay  RAM-only relay (+ --onion, --i2p, --public, --self-test)
 eigen-tui    client: engine, links, tor SOCKS, ratatui UI; binary `eigen`
 ```
 

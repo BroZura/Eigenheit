@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 eigen-core = { path = "../eigen-core" }
+eigen-transport = { path = "../eigen-transport" }
 tokio.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true

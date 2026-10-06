@@ -110,10 +110,10 @@ fn status(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
         p.s(BASE),
     )]);
     let (tor_s, tor_style) = match app.tor {
-        TorState::Up => ("tor ●", p.s(BASE)),
-        TorState::Connecting => ("tor ◌", p.dim()),
-        TorState::Off => ("offline ○", p.dim()),
-        TorState::ClearNet => ("CLEAR-NET ●", p.accent()),
+        TorState::Up => (format!("{} ●", app.transport), p.s(BASE)),
+        TorState::Connecting => (format!("{} ◌", app.transport), p.dim()),
+        TorState::Off => ("offline ○".to_string(), p.dim()),
+        TorState::ClearNet => (format!("{} ●", app.transport), p.accent()),
     };
     parts.push(vec![Span::styled(tor_s, tor_style)]);
     parts.push(vec![Span::styled(

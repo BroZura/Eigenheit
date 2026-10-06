@@ -22,12 +22,16 @@ use eigen_tui::engine::{Engine, Net, NetCfg, NetEvent};
 use eigen_tui::tor::RelayAddr;
 use eigen_tui::{harden, ui};
 
-const USAGE: &str =
-    "eigen [--relay HOST:PORT]... [--tor-socks 127.0.0.1:9050] [--i-accept-the-risk]
+const USAGE: &str = "eigen [--relay RELAY]... [--tor-socks 127.0.0.1:9050] [--sam 127.0.0.1:7656]
+      [--vpn IFACE | --wireguard IFACE] [--i-accept-the-risk]
       [--cover] [--cover-ms 500] [--delay-ms 1500] [--vault PATH] [--no-boot]
 
-  Default: RAM-only. Nothing touches the disk.
-  Relays must be .onion addresses (reached through tor) unless --i-accept-the-risk.";
+  RELAY is one of:
+    x.onion:PORT          through tor (SOCKS, one circuit per mask/dm/union)
+    x.b32.i2p             through i2p (SAM, one transient destination per mask/dm/union)
+    IP:PORT#KEY           direct, Noise-encrypted; needs --vpn/--wireguard IFACE
+                          (every direct connection is bound to IFACE and fails closed)
+  Default: RAM-only. Nothing touches the disk.";
 
 pub struct Opts {
     relays: Vec<RelayAddr>,
@@ -38,6 +42,9 @@ pub struct Opts {
     delay_ms: u64,
     vault: Option<String>,
     boot: bool,
+    sam: String,
+    vpn: Option<String>,
+    warnings: Vec<String>,
 }
 
 fn parse_args() -> Result<Opts, String> {
@@ -50,15 +57,21 @@ fn parse_args() -> Result<Opts, String> {
         delay_ms: 1500,
         vault: None,
         boot: true,
+        sam: eigen_transport::sam::DEFAULT_SAM.into(),
+        vpn: None,
+        warnings: Vec::new(),
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut val = || args.next().ok_or_else(|| USAGE.to_string());
         match a.as_str() {
-            "--relay" => o
-                .relays
-                .push(RelayAddr::parse(&val()?).ok_or("relay must be HOST:PORT")?),
+            "--relay" => o.relays.push(
+                RelayAddr::parse(&val()?)
+                    .ok_or("relay must be x.onion:PORT, x.b32.i2p or IP:PORT#KEY")?,
+            ),
             "--tor-socks" => o.socks = val()?,
+            "--sam" => o.sam = val()?,
+            "--vpn" | "--wireguard" => o.vpn = Some(val()?),
             "--i-accept-the-risk" => o.risk = true,
             "--cover" => o.cover = true,
             "--cover-ms" => o.cover_ms = val()?.parse().map_err(|_| USAGE)?,
@@ -69,14 +82,7 @@ fn parse_args() -> Result<Opts, String> {
             _ => return Err(USAGE.into()),
         }
     }
-    if !o.risk {
-        if let Some(r) = o.relays.iter().find(|r| !r.is_onion()) {
-            return Err(format!(
-                "refusing clear-net relay {}:{}.\nOver clear-net, my network sees which mailboxes I touch and when.\nUse a .onion relay, or pass --i-accept-the-risk (development only).",
-                r.host, r.port
-            ));
-        }
-    }
+    o.warnings = eigen_tui::policy::admit(&o.relays, o.vpn.as_deref(), o.risk)?;
     Ok(o)
 }
 
@@ -144,6 +150,8 @@ async fn run(opts: Opts, hard: harden::Hardening) -> std::io::Result<bool> {
         cover: Arc::new(AtomicBool::new(opts.cover)),
         cover_ms: opts.cover_ms,
         delay_ms: opts.delay_ms,
+        sam: Some(opts.sam.clone()),
+        device: opts.vpn.clone(),
     });
     let mut engine = Engine::new(net, ntx);
     if let Some(path) = &opts.vault {
@@ -166,6 +174,9 @@ async fn run(opts: Opts, hard: harden::Hardening) -> std::io::Result<bool> {
     engine.persist(&app);
     let me = app.masks[app.active_mask].who.name();
     app.notice(0, format!("I am {me}. generated here, known nowhere."));
+    for w in &opts.warnings {
+        app.warn(0, w.clone());
+    }
     if opts.relays.is_empty() {
         app.notice(
             0,

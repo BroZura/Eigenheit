@@ -57,18 +57,49 @@ pub async fn connect(socks: &str, host: &str, port: u16, isolation: &str) -> io:
 pub struct RelayAddr {
     pub host: String,
     pub port: u16,
+    /// Relay link key (`#key`): the link is Noise-encrypted and the relay authenticated.
+    pub key: Option<[u8; 32]>,
 }
 
 impl RelayAddr {
+    /// `x.onion:PORT`, `x.b32.i2p[:PORT]`, `HOST:PORT#KEY` (Noise), `HOST:PORT` (plain).
     pub fn parse(s: &str) -> Option<RelayAddr> {
-        let (h, p) = s.trim().rsplit_once(':')?;
+        let s = s.trim();
+        let (s, key) = match s.split_once('#') {
+            Some((a, k)) => (a, Some(eigen_transport::noise::parse_key(k)?)),
+            None => (s, None),
+        };
+        if s.ends_with(".i2p") {
+            return Some(RelayAddr {
+                host: s.to_string(),
+                port: 0,
+                key,
+            });
+        }
+        let (h, p) = s.rsplit_once(':')?;
+        let host = h.trim_matches(['[', ']']).to_string();
+        if let Some(h) = host.strip_suffix(":0").filter(|h| h.ends_with(".i2p")) {
+            return Some(RelayAddr {
+                host: h.to_string(),
+                port: 0,
+                key,
+            });
+        }
         Some(RelayAddr {
-            host: h.trim_matches(['[', ']']).to_string(),
+            host,
             port: p.parse().ok()?,
+            key,
         })
     }
     pub fn is_onion(&self) -> bool {
         self.host.ends_with(".onion")
+    }
+    pub fn is_i2p(&self) -> bool {
+        self.host.ends_with(".i2p")
+    }
+    /// Reached directly over IP (optionally through a VPN/WireGuard interface).
+    pub fn is_clear(&self) -> bool {
+        !self.is_onion() && !self.is_i2p()
     }
 }
 
@@ -113,6 +144,17 @@ mod tests {
         let (user, host) = srv.await.unwrap();
         assert_eq!(user, "circuit-a");
         assert_eq!(host, "x.onion");
+    }
+
+    #[test]
+    fn parse_transport_forms() {
+        let i = RelayAddr::parse("abcd.b32.i2p").unwrap();
+        assert!(i.is_i2p() && !i.is_clear());
+        let key = eigen_core::wire::base32(&[5u8; 32]);
+        let n = RelayAddr::parse(&format!("10.0.0.1:7778#{key}")).unwrap();
+        assert!(n.is_clear() && n.key == Some([5u8; 32]) && n.port == 7778);
+        assert!(RelayAddr::parse("10.0.0.1:7778#notakey").is_none());
+        assert!(RelayAddr::parse("1.2.3.4:7777").unwrap().key.is_none());
     }
 
     #[test]

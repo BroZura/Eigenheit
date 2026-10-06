@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["eigen-core", "eigen-relay", "eigen-tui"]
+members = ["eigen-core", "eigen-transport", "eigen-relay", "eigen-tui"]
 
 [workspace.package]
 version = "0.1.0"
@@ -24,6 +24,7 @@ tokio = { version = "=1.53.2", default-features = false, features = ["rt-multi-t
 ratatui = { version = "=0.29.0", default-features = false, features = ["crossterm"] }
 crossterm = { version = "=0.28.1", default-features = false, features = ["events"] }
 libc = "=0.2.190"
+snow = { version = "=0.10.0", default-features = false, features = ["default-resolver", "use-chacha20poly1305", "use-blake2", "use-curve25519", "use-getrandom", "std"] }
 proptest = { version = "=1.11.0", default-features = false, features = ["std"] }
 
 [profile.release]
