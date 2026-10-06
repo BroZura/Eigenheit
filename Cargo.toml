@@ -35,3 +35,6 @@ opt-level = 3
 
 [profile.dev.package."*"]
 opt-level = 2
+
+[profile.dev.package.eigen-core]
+opt-level = 2

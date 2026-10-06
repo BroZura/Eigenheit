@@ -16,6 +16,8 @@ ratatui.workspace = true
 crossterm.workspace = true
 zeroize.workspace = true
 libc.workspace = true
+x25519-dalek.workspace = true
+rand_core.workspace = true
 
 [dev-dependencies]
 eigen-relay = { path = "../eigen-relay" }

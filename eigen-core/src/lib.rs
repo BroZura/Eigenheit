@@ -9,6 +9,7 @@ pub mod identity;
 pub mod pgp;
 pub mod pow;
 pub mod ratchet;
+pub mod union;
 pub mod wire;
 pub mod words;
 pub mod x3dh;

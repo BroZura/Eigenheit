@@ -334,8 +334,10 @@ dependencies = [
  "eigen-core",
  "eigen-relay",
  "libc",
+ "rand_core 0.6.4",
  "ratatui",
  "tokio",
+ "x25519-dalek",
  "zeroize",
 ]
 

@@ -22,6 +22,9 @@ pub const TAG: usize = 16;
 pub struct MessageKey([u8; 32]);
 
 impl MessageKey {
+    pub(crate) fn from_bytes(k: [u8; 32]) -> MessageKey {
+        MessageKey(k)
+    }
     fn expand(&self) -> Zeroizing<[u8; 56]> {
         let mut out = Zeroizing::new([0u8; 56]);
         kdf(&[0u8; 32], &self.0, b"eigen/mk", out.as_mut());

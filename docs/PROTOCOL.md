@@ -70,17 +70,17 @@ Blob: `0x02 ‖ seal_fixed(Km, header ‖ ct, 600)` (AAD = mailbox id). A side m
 Secret `S:32` (random, or `Argon2id(passphrase, "eigen/union-pass/v1", m=64 MiB, t=3)`).
 Invite: `eigen://union/` ‖ base32(`S ‖ pow:u8 ‖ H(S)[0..3]`).
 - `uid = H("eigen/uid" ‖ S)`, `Kc = KDF(0, S, "eigen/union-ctrl", 32)`, mailbox at hour h: `MAC(S, "eigen/umbox" ‖ h)`. Poll h and h−1; post to h.
-- Blob: `0x10 ‖ seal_fixed(Kc, inner, 880)`.
-- `inner = kind:u8 ‖ from_ed:32 ‖ body ‖ Sig(sk, "eigen/union" ‖ uid ‖ kind ‖ from_ed ‖ body)`.
+- Blob: `0x10 ‖ seal_fixed(Kc, inner, 880)` with AAD = the hour mailbox id (a relay cannot move blobs between hours).
+- `inner = kind:u8 ‖ from_ed:32 ‖ len:u16 ‖ body ‖ Sig(sk, "eigen/union" ‖ uid ‖ kind ‖ from_ed ‖ body)`.
 
 | kind | body |
 |---|---|
 | 1 JOIN | `mx:32 ‖ rnd:16` (member X25519 key for this union) |
 | 2 HELLO | `mx:32 ‖ ends_at:u64 ‖ term:u32 ‖ to_ed:32` (answer to a JOIN) |
-| 3 SKEY | `gen:u32 ‖ eph:32 ‖ count:u8 ‖ count × (tag:8 ‖ AEAD(K_i, ck:32 ‖ idx:u32))` with `tag = H(to_ed)[0..8]`, `K_i = KDF(0, DH(eph, mx_i), "eigen/skey" ‖ uid, 32)`, nonce = 0 (single-use key) |
-| 4 MSG | `gen:u32 ‖ idx:u32 ‖ AEAD(mk, len:u16 ‖ text, padded 576)` with sender chain `mk_i = MAC(ck_i, "mk")`, `ck_{i+1} = MAC(ck_i, "ck")` |
+| 3 SKEY | `gen:u32 ‖ eph:32 ‖ count:u8 ‖ count × (tag:8 ‖ AEAD(K_i, ck:32 ‖ idx:u32))` with `tag = H("eigen/skey-tag" ‖ to_ed)[0..8]`, `K_i = KDF(0, DH(eph, mx_i), "eigen/skey" ‖ uid, 32)`, nonce = 0 (fresh `eph` per SKEY → single-use key), AD = gen; ≤ 12 entries per SKEY |
+| 4 MSG | `gen:u32 ‖ idx:u32 ‖ len:u16 ‖ ct` with `ct = AEAD(KDF(mk_i) → key ‖ nonce, len:u16 ‖ text padded to 576, uid ‖ from ‖ gen ‖ idx)`, sender chain `mk_i = MAC(ck_i, "mk")`, `ck_{i+1} = MAC(ck_i, "ck")` |
 | 5 LEAVE | `rnd:16` |
 | 6 RENEW | `term:u32` (I commit to term `term`) |
 | 7 DROP | `target_ed:32 ‖ term:u32` |
 
-Rules: roster = senders seen via JOIN/HELLO. On any roster shrink, every remaining participant mints a new generation and SKEYs it to the remaining roster only. On roster growth, existing participants SKEY their *current* chain position to the newcomer only. A joiner takes `ends_at = min(HELLO.ends_at)`. Term end: those who sent `RENEW(term+1)` continue with `ends_at += ttl`; others are removed. DROP passes at a strict majority of the roster minus the target.
+Rules: roster = senders seen via JOIN/HELLO. Receivers re-verify PoW (`pow`, `pow+6` for JOIN). Participants who LEAVE or are dropped are ignored for the rest of the term (a LEAVEr may JOIN again; a dropped key may not). MSGs that arrive before their SKEY are held ≤ 2 min. On any roster shrink, every remaining participant mints a new generation and SKEYs it to the remaining roster only. On roster growth, existing participants SKEY their *current* chain position to the newcomer only. A joiner takes `ends_at = min(HELLO.ends_at)`. Term end: those who sent `RENEW(term+1)` continue with `ends_at += ttl`; others are removed. DROP passes at a strict majority of the roster minus the target. `/ttl` in a union sets my term length and can only shorten my current term.

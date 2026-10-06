@@ -493,8 +493,8 @@ impl Engine {
             Action::Ttl(vid, secs) => {
                 if let Some(s) = self.dms.get_mut(&vid).and_then(|d| d.session.as_mut()) {
                     s.ttl = secs as u32;
-                } else if let Some(u) = self.unions.get_mut(&vid) {
-                    u.msg_ttl = secs as u32;
+                } else if crate::unions::set_ttl(self, vid, secs) {
+                    app.notice(vid, "the union ends no later than that for me, and each term lasts that long.");
                 }
                 if let Some(v) = app.view_mut(vid) {
                     v.ttl = secs;
