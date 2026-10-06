@@ -1,7 +1,7 @@
 #![deny(unsafe_code)]
 //! eigen — mine, not yours, not theirs.
 use std::io::{stdout, Write};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -90,8 +90,32 @@ struct TermGuard {
     enhanced: bool,
 }
 
+/// Set once anything was copied, so the clipboard is cleared on every exit path.
+static CLIP_USED: AtomicBool = AtomicBool::new(false);
+
+/// Put text on the terminal's clipboard (OSC 52). An empty string clears it.
+/// Inside tmux the sequence is passed through to the outer terminal.
+fn osc52(text: &str) {
+    let seq = format!(
+        "\x1b]52;c;{}\x07",
+        eigen_core::wire::base64(text.as_bytes())
+    );
+    let seq = if std::env::var_os("TMUX").is_some() {
+        format!("\x1bPtmux;{}\x1b\\", seq.replace('\x1b', "\x1b\x1b"))
+    } else {
+        seq
+    };
+    let mut out = stdout();
+    let _ = out.write_all(seq.as_bytes());
+    let _ = out.flush();
+    zeroize::Zeroize::zeroize(&mut seq.into_bytes());
+}
+
 impl Drop for TermGuard {
     fn drop(&mut self) {
+        if CLIP_USED.load(Ordering::Relaxed) {
+            osc52("");
+        }
         let mut out = stdout();
         if self.enhanced {
             let _ = execute!(out, crossterm::event::PopKeyboardEnhancementFlags);
@@ -226,6 +250,7 @@ async fn run(opts: Opts, hard: harden::Hardening) -> std::io::Result<bool> {
 
     let boot_until = Instant::now() + Duration::from_millis(1600);
     let mut frame = tokio::time::interval(Duration::from_millis(200));
+    let mut clip_clear_at: Option<Instant> = None;
     let mut last_tick = 0u64;
     loop {
         if let Mode::Boot(_) = app.mode {
@@ -263,6 +288,10 @@ async fn run(opts: Opts, hard: harden::Hardening) -> std::io::Result<bool> {
                     // Wipe first, animate after: the burn is already done when the screen decays.
                     engine.burn();
                     app.wipe();
+                    if CLIP_USED.load(Ordering::Relaxed) {
+                        osc52("");
+                        clip_clear_at = None;
+                    }
                     app.mode = Mode::Burning(0);
                 }
                 Action::Quit => return Ok(false),
@@ -271,6 +300,16 @@ async fn run(opts: Opts, hard: harden::Hardening) -> std::io::Result<bool> {
         }
         if engine.dirty {
             engine.persist(&app);
+        }
+        if let Some(text) = app.clip_out.take() {
+            osc52(&text);
+            CLIP_USED.store(true, Ordering::Relaxed);
+            clip_clear_at =
+                Some(Instant::now() + Duration::from_secs(eigen_tui::app::CLIPBOARD_SECS));
+        }
+        if clip_clear_at.is_some_and(|d| Instant::now() >= d) {
+            osc52("");
+            clip_clear_at = None;
         }
     }
 }

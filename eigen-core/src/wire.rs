@@ -124,6 +124,26 @@ pub fn unbase32(s: &str) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// Standard base64 with padding (RFC 4648).
+pub fn base64(d: &[u8]) -> String {
+    let mut s = String::with_capacity(d.len().div_ceil(3) * 4);
+    for c in d.chunks(3) {
+        let n = (c[0] as u32) << 16
+            | (*c.get(1).unwrap_or(&0) as u32) << 8
+            | *c.get(2).unwrap_or(&0) as u32;
+        for i in 0..4 {
+            if i <= c.len() {
+                s.push(B64[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                s.push('=');
+            }
+        }
+    }
+    s
+}
+
 pub fn hex(data: &[u8]) -> String {
     data.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -137,6 +157,20 @@ mod tests {
         #[test]
         fn base32_roundtrip(v in proptest::collection::vec(any::<u8>(), 0..100)) {
             prop_assert_eq!(unbase32(&base32(&v)).unwrap(), v);
+        }
+    }
+
+    #[test]
+    fn base64_vectors() {
+        // RFC 4648 section 10.
+        for (i, o) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(base64(i.as_bytes()), o);
         }
     }
 

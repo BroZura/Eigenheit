@@ -314,14 +314,6 @@ pub fn join(e: &mut Engine, arg: &str, app: &mut App) {
     }
 }
 
-pub fn invite(e: &mut Engine, vid: u64, app: &mut App) {
-    if let Some(u) = e.unions.get(&vid) {
-        let inv = u.keys.invite();
-        app.notice(vid, "the current invite (changes whenever someone leaves):");
-        app.notice(vid, inv);
-    }
-}
-
 pub fn who(e: &mut Engine, vid: u64, app: &mut App) {
     let Some(me) = me(e, vid) else { return };
     let Some(u) = e.unions.get(&vid) else { return };

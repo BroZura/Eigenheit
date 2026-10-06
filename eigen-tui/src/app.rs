@@ -117,7 +117,9 @@ impl View {
 pub enum Action {
     NewMask,
     SwitchMask(usize),
-    NewUnion { passphrase: Option<String> },
+    NewUnion {
+        passphrase: Option<String>,
+    },
     Join(String),
     Leave(u64),
     Dm(String),
@@ -125,7 +127,10 @@ pub enum Action {
     Unsay(u64),
     Trust(u64, Option<String>),
     Who(u64),
-    Invite(u64),
+    /// Show a card or invite on a clean screen.
+    Show(u64, Item),
+    /// Copy a card or invite to the clipboard.
+    Copy(u64, Item),
     Ttl(u64, u64),
     Renew(u64),
     Drop(u64, String),
@@ -139,12 +144,30 @@ pub enum Action {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Item {
+    Card,
+    Invite,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
     Boot(u16),
     Normal,
     Help,
+    /// A card or invite shown alone on the screen, ready to select or copy.
+    Show,
     Burning(u16),
 }
+
+/// Text shown on the clean screen (`Mode::Show`).
+pub struct Shown {
+    pub title: String,
+    pub text: zeroize::Zeroizing<String>,
+    pub copied: bool,
+}
+
+/// Seconds after which copied text is removed from the clipboard.
+pub const CLIPBOARD_SECS: u64 = 30;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TorState {
@@ -189,6 +212,11 @@ pub struct App {
     pub last_key: Instant,
     history: Vec<String>,
     hist_pos: Option<usize>,
+    pub shown: Option<Shown>,
+    /// Text waiting to be sent to the terminal clipboard (OSC 52).
+    pub clip_out: Option<zeroize::Zeroizing<String>>,
+    /// Set once something was copied; the clipboard is cleared on exit and burn.
+    pub clip_used: bool,
 }
 
 pub const HELP: &[(&str, &str)] = &[
@@ -204,7 +232,14 @@ pub const HELP: &[(&str, &str)] = &[
         "leave this union or dm, instantly, without a trace",
     ),
     ("/dm <card>", "open a dm with a mask's card"),
-    ("/card", "show the card of the mask I wear"),
+    (
+        "/card",
+        "Show the contact card of the current mask. Press C to copy it.",
+    ),
+    (
+        "/copy [card|invite]",
+        "Copy the contact card or the union invite to the clipboard.",
+    ),
     ("/verify [name]", "fingerprint + SAS to compare out of band"),
     ("/ttl <30m|1h|2d>", "how long my words live here"),
     ("/renew", "I stay for the next term of this union"),
@@ -296,6 +331,9 @@ impl App {
             last_key: Instant::now(),
             history: Vec::new(),
             hist_pos: None,
+            shown: None,
+            clip_out: None,
+            clip_used: false,
         }
     }
 
@@ -455,7 +493,24 @@ impl App {
     }
 
     /// Forget everything this screen remembers.
+    /// Show text alone on a clean screen, so it can be selected or copied.
+    pub fn show(&mut self, title: impl Into<String>, text: String) {
+        self.shown = Some(Shown {
+            title: title.into(),
+            text: zeroize::Zeroizing::new(text),
+            copied: false,
+        });
+        self.mode = Mode::Show;
+    }
+
+    /// Queue text for the terminal clipboard.
+    pub fn copy(&mut self, text: String) {
+        self.clip_out = Some(zeroize::Zeroizing::new(text));
+    }
+
     pub fn wipe(&mut self) {
+        self.shown = None;
+        self.clip_out = None;
         self.views.truncate(1);
         self.views[0].lines.clear();
         self.masks.clear();
@@ -503,6 +558,22 @@ impl App {
             Mode::Help => {
                 if matches!(k.code, KeyCode::Esc | KeyCode::F(1) | KeyCode::Char('q')) {
                     self.mode = Mode::Normal;
+                }
+                return;
+            }
+            Mode::Show => {
+                match k.code {
+                    KeyCode::Char('c') | KeyCode::Char('C') if !ctrl => {
+                        if let Some(sh) = self.shown.as_mut() {
+                            self.clip_out = Some(sh.text.clone());
+                            sh.copied = true;
+                        }
+                    }
+                    KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                        self.shown = None;
+                        self.mode = Mode::Normal;
+                    }
+                    _ => {}
                 }
                 return;
             }
@@ -689,7 +760,16 @@ impl App {
                 }
             }
             "dm" if !arg.is_empty() => self.outbox.push(Action::Dm(arg.to_string())),
-            "card" => self.outbox.push(Action::Export(Some("card".into()))),
+            "card" => self.outbox.push(Action::Show(vid, Item::Card)),
+            "copy" => match arg {
+                "" | "card" => self.outbox.push(Action::Copy(vid, Item::Card)),
+                "invite" => {
+                    if need(self, ViewKind::Union) {
+                        self.outbox.push(Action::Copy(vid, Item::Invite))
+                    }
+                }
+                _ => self.here_notice("Usage: /copy card, or /copy invite in a union."),
+            },
             "verify" => self.outbox.push(Action::Verify(vid, arg_opt)),
             "ttl" => match parse_duration(arg) {
                 Some(s) if kind != ViewKind::Home => self.outbox.push(Action::Ttl(vid, s)),
@@ -747,7 +827,7 @@ impl App {
             }
             "invite" => {
                 if need(self, ViewKind::Union) {
-                    self.outbox.push(Action::Invite(vid))
+                    self.outbox.push(Action::Show(vid, Item::Invite))
                 }
             }
             "veil" => match arg {
@@ -906,6 +986,29 @@ mod tests {
             once.expires.unwrap() <= now() + ONCE_SECS,
             "once-line burns soon after being seen"
         );
+    }
+
+    #[test]
+    fn show_screen_copies_and_closes() {
+        let mut a = App::new(false);
+        a.mode = Mode::Normal;
+        a.input = "/card".into();
+        a.submit();
+        assert!(matches!(a.outbox.pop(), Some(Action::Show(0, Item::Card))));
+        a.input = "/copy".into();
+        a.submit();
+        assert!(matches!(a.outbox.pop(), Some(Action::Copy(0, Item::Card))));
+        a.show("Contact card", "eigen://mask/abc".into());
+        assert_eq!(a.mode, Mode::Show);
+        press(&mut a, KeyCode::Char('c'));
+        assert_eq!(
+            a.clip_out.as_deref().map(|s| s.as_str()),
+            Some("eigen://mask/abc")
+        );
+        assert!(a.shown.as_ref().unwrap().copied);
+        press(&mut a, KeyCode::Esc);
+        assert_eq!(a.mode, Mode::Normal);
+        assert!(a.shown.is_none());
     }
 
     #[test]

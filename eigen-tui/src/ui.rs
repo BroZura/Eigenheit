@@ -16,17 +16,33 @@ const KEY_PALETTE: [u8; 14] = [
     109, 110, 138, 144, 146, 151, 174, 180, 181, 182, 187, 152, 139, 108,
 ];
 
-pub const SIGIL: &[&str] = &[
-    "┌───────────┐",
-    "│ ╲       ╱ │",
-    "│   ╲   ╱   │",
-    "│     ◆     │",
-    "│   ╱   ╲   │",
-    "│ ╱       ╲ │",
-    "└───────────┘",
+/// The name, shown at the top of the start screen, the lock screen and the home view.
+pub const BANNER: &[&str] = &[
+    r#"'||''''|                             '||                   ||"#,
+    r#" ||   .   ''                          ||             ''    ||"#,
+    r#" ||'''|   ||  .|''|, .|''|, `||''|,   ||''|, .|''|,  ||  ''||''"#,
+    r#" ||       ||  ||  || ||..||  ||  ||   ||  || ||..||  ||    ||"#,
+    r#".||....| .||. `|..|| `|...  .||  ||. .||  || `|...  .||.   `|..'"#,
+    r#"                  ||"#,
+    r#"               `..|'"#,
 ];
-pub const MOTTO: &str = "The one who owns nothing is owned by everything.";
-pub const TAGLINE: &str = "Mine. Not yours. Not theirs.";
+pub const QUOTE: &str = "\u{201c}My power is my property. My power gives me property. My power am I myself, and through it am I my property.\u{201d}";
+
+/// Banner lines padded to one width, so centering keeps them aligned.
+fn banner_lines(style: Style) -> Vec<TLine<'static>> {
+    let w = BANNER.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    BANNER
+        .iter()
+        .map(|l| TLine::from(Span::styled(format!("{l:<w$}"), style)).centered())
+        .collect()
+}
+
+fn quote_lines(width: usize, style: Style) -> Vec<TLine<'static>> {
+    wrap(QUOTE, width.saturating_sub(4).min(72))
+        .into_iter()
+        .map(|l| TLine::from(Span::styled(l, style)).centered())
+        .collect()
+}
 
 struct Pal {
     color: bool,
@@ -92,6 +108,45 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.mode == Mode::Help {
         help(f, area, &p);
     }
+    if app.mode == Mode::Show {
+        show(f, area, app, &p);
+    }
+}
+
+/// A card or invite alone on a clean screen: no borders and no side panel, so a
+/// mouse selection contains only the text.
+fn show(f: &mut Frame, area: Rect, app: &App, p: &Pal) {
+    let Some(sh) = &app.shown else { return };
+    f.render_widget(Clear, area);
+    let mut lines: Vec<TLine> = vec![
+        TLine::from(Span::styled(
+            sh.title.clone(),
+            p.s(BASE).add_modifier(Modifier::BOLD),
+        )),
+        TLine::from(""),
+    ];
+    let w = (area.width as usize).max(1);
+    let chars: Vec<char> = sh.text.chars().collect();
+    for chunk in chars.chunks(w) {
+        lines.push(TLine::from(Span::styled(
+            chunk.iter().collect::<String>(),
+            p.s(BASE),
+        )));
+    }
+    lines.push(TLine::from(""));
+    let hint = if sh.copied {
+        format!(
+            "Copied to the clipboard. It will be cleared in {} seconds. Press Esc to close.",
+            crate::app::CLIPBOARD_SECS
+        )
+    } else {
+        "Press C to copy to the clipboard. Press Esc to close.".to_string()
+    };
+    lines.push(TLine::from(Span::styled(
+        hint,
+        if sh.copied { p.accent() } else { p.dim() },
+    )));
+    f.render_widget(Paragraph::new(lines), area);
 }
 
 fn status(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
@@ -99,25 +154,28 @@ fn status(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
     let mut parts: Vec<Vec<Span>> = Vec::new();
     match app.me() {
         Some(w) => parts.push(vec![
-            Span::styled("I am ", p.dim()),
             Span::styled(format!("{} ", w.glyph()), p.key(&w)),
             Span::styled(w.name(), p.s(BASE).add_modifier(Modifier::BOLD)),
         ]),
-        None => parts.push(vec![Span::styled("I am nobody yet", p.dim())]),
+        None => parts.push(vec![Span::styled("No identity", p.dim())]),
     }
     parts.push(vec![Span::styled(
-        format!("mask {}/{}", app.active_mask + 1, app.masks.len()),
+        format!("Mask {}/{}", app.active_mask + 1, app.masks.len()),
         p.s(BASE),
     )]);
     let (tor_s, tor_style) = match app.tor {
         TorState::Up => (format!("{} ●", app.transport), p.s(BASE)),
         TorState::Connecting => (format!("{} ◌", app.transport), p.dim()),
-        TorState::Off => ("offline ○".to_string(), p.dim()),
+        TorState::Off => ("Offline ○".to_string(), p.dim()),
         TorState::ClearNet => (format!("{} ●", app.transport), p.accent()),
     };
     parts.push(vec![Span::styled(tor_s, tor_style)]);
     parts.push(vec![Span::styled(
-        if app.cover { "cover ON" } else { "cover off" },
+        if app.cover {
+            "Cover traffic on"
+        } else {
+            "Cover traffic off"
+        },
         p.s(BASE),
     )]);
     let v = app.view();
@@ -131,30 +189,30 @@ fn status(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
             p.s(BASE)
         };
         parts.push(vec![Span::styled(
-            format!("union ends {}", fmt_duration(left)),
+            format!("Union ends in {}", fmt_duration(left)),
             st,
         )]);
     } else if v.kind == ViewKind::Dm {
         parts.push(vec![Span::styled(
-            format!("words live {}", fmt_duration(v.ttl)),
+            format!("Messages expire after {}", fmt_duration(v.ttl)),
             p.s(BASE),
         )]);
     }
     if let Some(d) = app.deadman {
         let left = d.saturating_sub(app.last_key.elapsed().as_secs());
         parts.push(vec![Span::styled(
-            format!("deadman {}", fmt_duration(left)),
+            format!("Auto-burn in {}", fmt_duration(left)),
             p.accent(),
         )]);
     }
     if app.veiled {
-        parts.push(vec![Span::styled("veiled", p.accent())]);
+        parts.push(vec![Span::styled("Screen hidden", p.accent())]);
     }
     if !app.locked {
-        parts.push(vec![Span::styled("swap: exposed", p.dim())]);
+        parts.push(vec![Span::styled("Memory not locked", p.dim())]);
     }
     parts.push(vec![Span::styled(
-        if app.vault { "vault" } else { "ram-only" },
+        if app.vault { "Vault" } else { "RAM only" },
         p.dim(),
     )]);
     // Fit to width by priority (identity and the union countdown always stay),
@@ -196,7 +254,7 @@ fn status(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
 fn strip(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
     let mut lines: Vec<TLine> = Vec::new();
     let w = r.width.saturating_sub(2) as usize;
-    lines.push(TLine::from(Span::styled("masks", p.dim())));
+    lines.push(TLine::from(Span::styled("Masks", p.dim())));
     for (i, m) in app.masks.iter().enumerate() {
         let mark = if i == app.active_mask { "▸" } else { " " };
         lines.push(TLine::from(vec![
@@ -212,7 +270,10 @@ fn strip(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
             ),
         ]));
     }
-    for (kind, label) in [(ViewKind::Union, "unions"), (ViewKind::Dm, "dms")] {
+    for (kind, label) in [
+        (ViewKind::Union, "Unions"),
+        (ViewKind::Dm, "Direct messages"),
+    ] {
         lines.push(TLine::from(""));
         lines.push(TLine::from(Span::styled(label, p.dim())));
         for (i, v) in app.views.iter().enumerate().filter(|(_, v)| v.kind == kind) {
@@ -259,7 +320,7 @@ fn strip(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
         Span::styled(if home { "▸" } else { " " }, p.accent()),
         Span::styled("◌ ", p.dim()),
         Span::styled(
-            "alone",
+            "Home",
             if home {
                 p.s(BASE).add_modifier(Modifier::BOLD)
             } else {
@@ -340,6 +401,23 @@ fn stream(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
     };
     let width = inner.width as usize;
     let mut out: Vec<TLine> = Vec::new();
+    if v.kind == ViewKind::Home
+        && !app.veiled
+        && width > BANNER.iter().map(|l| l.len()).max().unwrap_or(0)
+    {
+        out.extend(
+            banner_lines(p.accent())
+                .into_iter()
+                .map(|l| l.left_aligned()),
+        );
+        out.push(TLine::from(""));
+        out.extend(
+            wrap(QUOTE, width.min(72))
+                .into_iter()
+                .map(|l| TLine::from(Span::styled(l, p.dim()))),
+        );
+        out.push(TLine::from(""));
+    }
     for l in &v.lines {
         match l.kind {
             LineKind::Notice | LineKind::Warn => {
@@ -443,7 +521,7 @@ fn input(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
             .map(|e| e.saturating_sub(now()) <= 60)
             .unwrap_or(false)
         && !v.renewed;
-    let prompt = if pulse { "renew? › " } else { "› " };
+    let prompt = if pulse { "Renew? › " } else { "› " };
     let prompt_style = if pulse && now().is_multiple_of(2) {
         p.accent().add_modifier(Modifier::REVERSED)
     } else {
@@ -456,7 +534,7 @@ fn input(f: &mut Frame, r: Rect, app: &App, p: &Pal) {
     let line = if app.input.is_empty() && v.kind == ViewKind::Home {
         TLine::from(vec![
             Span::styled(prompt, prompt_style),
-            Span::styled("/help · /union · /join · /dm", p.dim()),
+            Span::styled("Type /help for a list of commands.", p.dim()),
         ])
     } else {
         TLine::from(vec![
@@ -490,7 +568,7 @@ fn help(f: &mut Frame, area: Rect, p: &Pal) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(p.dim())
-        .title(Span::styled(" what is mine to do ", p.accent()));
+        .title(Span::styled(" Commands ", p.accent()));
     let key_w = HELP
         .iter()
         .map(|(k, _)| k.len())
@@ -509,7 +587,7 @@ fn help(f: &mut Frame, area: Rect, p: &Pal) {
             ])
         })
         .chain(std::iter::once(TLine::from(Span::styled(
-            " Esc to return",
+            " Press Esc to close.",
             p.dim(),
         ))))
         .collect();
@@ -520,27 +598,26 @@ const VEIL: &str = "░░░░░░";
 
 fn locked(f: &mut Frame, area: Rect, app: &App, p: &Pal) {
     let mut lines: Vec<TLine> = Vec::new();
-    let top = area.height.saturating_sub(SIGIL.len() as u16 + 6) / 2;
+    let top = area.height.saturating_sub(BANNER.len() as u16 + 5) / 2;
     for _ in 0..top {
         lines.push(TLine::from(""));
     }
-    for s in SIGIL {
-        lines.push(TLine::from(Span::styled(*s, p.dim())).centered());
-    }
+    lines.extend(banner_lines(p.dim()));
     lines.push(TLine::from(""));
     lines.push(
         TLine::from(Span::styled(
-            "locked.",
+            "Locked",
             p.s(BASE).add_modifier(Modifier::BOLD),
         ))
         .centered(),
     );
     let fails = app.lock.as_ref().map(|l| l.fails).unwrap_or(0);
     let note = if fails == 0 {
-        "my passphrase, then Enter. wrong too often and everything burns.".to_string()
+        "Enter the passphrase and press Enter. After 5 failed attempts, all data is destroyed."
+            .to_string()
     } else {
         format!(
-            "does not open. {} tries before everything burns.",
+            "Incorrect passphrase. {} attempts remain before all data is destroyed.",
             5u8.saturating_sub(fails)
         )
     };
@@ -557,24 +634,18 @@ fn locked(f: &mut Frame, area: Rect, app: &App, p: &Pal) {
 }
 
 fn boot(f: &mut Frame, area: Rect, p: &Pal) {
+    let quote = quote_lines(area.width as usize, p.dim());
     let mut lines: Vec<TLine> = Vec::new();
-    let top = area.height.saturating_sub(SIGIL.len() as u16 + 5) / 2;
+    let top = area
+        .height
+        .saturating_sub((BANNER.len() + 1 + quote.len()) as u16)
+        / 2;
     for _ in 0..top {
         lines.push(TLine::from(""));
     }
-    for s in SIGIL {
-        lines.push(TLine::from(Span::styled(*s, p.accent())).centered());
-    }
+    lines.extend(banner_lines(p.accent()));
     lines.push(TLine::from(""));
-    lines.push(
-        TLine::from(Span::styled(
-            "E I G E N H E I T",
-            p.s(BASE).add_modifier(Modifier::BOLD),
-        ))
-        .centered(),
-    );
-    lines.push(TLine::from(""));
-    lines.push(TLine::from(Span::styled(MOTTO, p.dim())).centered());
+    lines.extend(quote);
     f.render_widget(Paragraph::new(lines), area);
 }
 
@@ -630,8 +701,21 @@ mod tests {
         app.active = 1;
         app.notice(5, "a long notice ".repeat(20));
         let s = render(&app, 80, 24);
-        assert!(s.contains("I am"));
-        assert!(s.contains("union ends"));
+        assert!(s.contains("Mask 1/1"));
+        assert!(s.contains("Union ends in"));
+    }
+
+    #[test]
+    fn boot_and_show_screens_fit_80x24() {
+        let mut app = App::new(false);
+        let s = render(&app, 80, 24);
+        assert!(s.contains(".||....|"), "banner on the start screen");
+        assert!(s.contains("My power is my property."));
+        app.mode = Mode::Normal;
+        app.show("Contact card", format!("eigen://mask/{}", "a".repeat(84)));
+        let s = render(&app, 80, 24);
+        assert!(s.contains("Press C to copy"));
+        assert!(!s.contains("Masks"), "nothing else on the clean screen");
     }
 
     #[test]
@@ -654,7 +738,9 @@ mod snapshot {
     #[ignore]
     fn print_80x24() {
         let mut app = App::new(false);
-        app.mode = Mode::Normal;
+        if std::env::var_os("EIGEN_SNAP_BOOT").is_none() {
+            app.mode = Mode::Normal;
+        }
         app.tor = TorState::Up;
         let ms: Vec<_> = (0..4)
             .map(|_| eigen_core::identity::Mask::generate().who())

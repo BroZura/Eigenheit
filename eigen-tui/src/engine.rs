@@ -62,23 +62,23 @@ impl NetCfg {
         let mut exposed = false;
         for r in &self.relays {
             let p = if r.is_onion() {
-                "tor".to_string()
+                "Tor".to_string()
             } else if r.is_i2p() {
-                "i2p".to_string()
+                "I2P".to_string()
             } else {
                 match (&self.device, r.key.is_some()) {
-                    (Some(d), true) => format!("vpn {d}"),
+                    (Some(d), true) => format!("VPN {d}"),
                     (Some(d), false) => {
                         exposed = true;
-                        format!("vpn {d} PLAIN")
+                        format!("VPN {d} (unencrypted)")
                     }
                     (None, true) => {
                         exposed = true;
-                        "CLEAR-NET noise".to_string()
+                        "Direct (encrypted)".to_string()
                     }
                     (None, false) => {
                         exposed = true;
-                        "CLEAR-NET".to_string()
+                        "Direct (unencrypted)".to_string()
                     }
                 }
             };
@@ -656,7 +656,20 @@ impl Engine {
             },
             Action::Trust(vid, name) => self.trust(vid, name, app),
             Action::Who(vid) => crate::unions::who(self, vid, app),
-            Action::Invite(vid) => crate::unions::invite(self, vid, app),
+            Action::Show(vid, item) => match self.item_text(vid, item, app) {
+                Some((title, text)) => app.show(title, text),
+                None => app.here_notice("This is only available in a union."),
+            },
+            Action::Copy(vid, item) => match self.item_text(vid, item, app) {
+                Some((title, text)) => {
+                    app.copy(text);
+                    app.here_notice(format!(
+                        "{title} copied to the clipboard. It will be cleared in {} seconds.",
+                        crate::app::CLIPBOARD_SECS
+                    ));
+                }
+                None => app.here_notice("This is only available in a union."),
+            },
             Action::Leave(vid) => {
                 if let Some(d) = self.dms.remove(&vid) {
                     self.net.drop_ctx(d.ctx);
@@ -841,6 +854,26 @@ impl Engine {
         if t != me {
             app.notice(vid, format!("SAS  {}", sas(&me, &t)));
             app.notice(vid, "compare the SAS out of band. same words on both screens → nobody stands between us.");
+        }
+    }
+
+    /// The text of a card or invite, with a title for display.
+    fn item_text(&self, vid: u64, item: crate::app::Item, app: &App) -> Option<(String, String)> {
+        match item {
+            crate::app::Item::Card => {
+                let ms = self.masks.get(app.active_mask)?;
+                Some((
+                    format!("Contact card of {}", ms.mask.who().name()),
+                    ms.mask.card().encode(),
+                ))
+            }
+            crate::app::Item::Invite => {
+                let u = self.unions.get(&vid)?;
+                Some((
+                    format!("Invite to union {}", u.face.name()),
+                    u.keys.invite(),
+                ))
+            }
         }
     }
 
