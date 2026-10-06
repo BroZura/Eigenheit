@@ -1,0 +1,25 @@
+# Decisions
+
+Each entry: decision, why, and what it costs. When a security choice was ambiguous, the more paranoid option was taken.
+
+1. **X3DH + Double Ratchet, not Noise (`snow`).** DMs must work asynchronously (recipient offline). Noise patterns are interactive and give no ratchet; I would have to build the ratchet on top anyway. X3DH/DR is specified (Signal docs) and implemented here directly on audited primitives. Cost: own implementation of a protocol (not of primitives) — needs audit.
+2. **Tor via local `tor` daemon (SOCKS5 + control port), not `arti`.** `arti` onion-service hosting is still marked experimental and pulls in hundreds of crates (against "minimal dependencies"). A local `tor` daemon is mature; circuit isolation per mask/union uses SOCKS username/password isolation (`IsolateSOCKSAuth`, on by default). The relay publishes an ephemeral onion service with `ADD_ONION` (nothing written to disk). Cost: user must run `tor`.
+3. **Clear-net relays refused** unless `--i-accept-the-risk`. Local dev uses that flag. Over clear-net the link is *not* additionally encrypted: mailbox ids are visible to a network observer (content stays E2E encrypted).
+4. **Fixed 1024-byte cells, one response per request.** The relay answers every request cell with exactly one cell, so downstream volume mirrors upstream volume. FETCH returns one blob at a time.
+5. **Every blob is exactly 960 bytes**, plaintexts padded to fixed per-type sizes before encryption. Long messages are rejected ("say less"), not fragmented, so length never leaks. Max text: 600 bytes (DM), 560 bytes (union).
+6. **Sealed sender by construction**: there is no sender field on the wire. The X3DH initial message encrypts the sender identity to the recipient's signed prekey (ECIES) — the relay sees only a random-looking blob in the recipient's intro mailbox.
+7. **Mailbox rotation**: DM receive mailboxes are announced inside the ratchet payload and rotated whenever I start a new sending chain (each DH ratchet step); old ones are polled for a 15-minute grace period. Union mailboxes rotate hourly: `id = BLAKE2b-MAC(S, "mbox" || hour)`.
+8. **Header confidentiality** via an outer AEAD under a per-mailbox key (derived from the announced mailbox secret) instead of the header-encryption ratchet variant. Same property against the relay, simpler code.
+9. **Sender keys for unions, MLS later.** MLS (RFC 9420) gives better post-compromise security for groups but no small audited Rust crate fits "minimal deps". Each member signs every union message with its mask key so members cannot forge each other.
+10. **Drop vote threshold: strict majority of the remaining participants (target excluded).** Unanimity lets one person block; plurality lets two people rule. A drop only rotates keys away from the target for the current term; the target can return with another mask. No ban list survives the term — no permanent authority.
+11. **Union end time: the earliest one reported.** A joiner adopts the minimum `ends_at` among HELLOs. Dissolution is the default; nobody can extend a union for others.
+12. **Renewal is individual.** `/renew` commits only me to the next term. At term end, those who did not renew are out; remaining members rotate keys.
+13. **Names: `adjective-noun-xxxx` from BLAKE2b(ed25519 ‖ context).** 8+8+16 = 32 bits — readable, but grindable. Names are handles; TOFU + `/verify` (full fingerprint + SAS) authenticate.
+14. **PGP interop is export/import only** (OpenPGP v4, EdDSA-legacy Ed25519 key with self-signature, SHA-1 v4 fingerprint as PGP requires). PGP is not used for sessions: no forward secrecy, long-lived keys, and metadata-rich packets.
+15. **No serde.** All formats are hand-written length-checked binary (`wire.rs`). Fewer dependencies, explicit sizes.
+16. **Memory**: secrets are `zeroize`d on drop. `mlockall(MCL_CURRENT|MCL_FUTURE|MCL_ONFAULT)` only if `RLIMIT_MEMLOCK` is unlimited (or can be raised); otherwise the status bar shows `swap: exposed` — locking partially and then failing allocations would be worse. Core dumps off, `PR_SET_DUMPABLE=0`.
+17. **Ratchet sessions are not persisted**, even with a vault. The vault stores masks, union secrets and TOFU pins. After restart DMs re-handshake. Persisting ratchet state would defeat forward secrecy on disk seizure.
+18. **Vault has two equal slots** (real + decoy/unused, unused filled with random). The duress passphrase opens the decoy; if the decoy is marked `wipe`, opening it silently overwrites the other slot.
+19. **PoW**: BLAKE2b hashcash bound to `(hour, mailbox, H(blob))`. Relay base 12 bits, +2 bits per doubling of the per-mailbox put rate. Union default 14 bits for messages, +6 for JOIN.
+20. **Relay panics are silent** (empty panic hook, `panic = "abort"` in release) so not even a crash message leaks identifiers.
+21. **Ctrl-M is Enter** in most terminals; new mask is `/mask` and `Ctrl-M` only works where the kitty keyboard protocol is available.
